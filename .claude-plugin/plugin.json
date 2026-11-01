@@ -1,0 +1,16 @@
+{
+  "name": "prompt-power-up",
+  "version": "0.1.0",
+  "description": "Turns long, rambling prompts (dictated or typed, any voice app) into a clear Super Power Prompt before Claude reads them. Thai + English.",
+  "author": {
+    "name": "Copvang"
+  },
+  "keywords": [
+    "prompt",
+    "dictation",
+    "voice",
+    "thai",
+    "mod"
+  ],
+  "license": "MIT"
+}

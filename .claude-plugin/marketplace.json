@@ -1,0 +1,5 @@
+{
+  "name": "copvang",
+  "owner": { "name": "Copvang" },
+  "plugins": [{ "name": "prompt-power-up", "source": "./", "description": "Turn long, rambling (dictated) prompts into a clear Super Power Prompt before Claude reads them. Thai + English." }]
+}

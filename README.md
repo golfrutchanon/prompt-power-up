@@ -164,4 +164,24 @@ In the desktop app: click + next to the prompt box → Plugins → Add marketpla
 
 ตอบ `y` เพื่อเพิ่ม marketplace แล้วเลือก scope (user) / Answer `y` to add the marketplace, then pick a scope (user).
 
+### อัปเดต แล้วต้องโหลดใหม่ / Update, then reload
+
+ตัวที่ session รันอยู่คือ copy ที่ติดตั้งไว้ ไม่ใช่โค้ดล่าสุดบน GitHub และมันปักอยู่กับ**เลขเวอร์ชัน**
+ไม่ใช่ commit · แก้โค้ดแล้ว push เฉยๆ จึงไม่มีผลกับเครื่องที่ติดตั้งไว้ ต้องขึ้นเวอร์ชันใหม่ด้วย
+
+```
+claude plugin marketplace update copvang
+claude plugin update prompt-power-up
+```
+แล้ว **restart Claude Code หรือ `/reload-plugins`** · ถ้าไม่โหลดใหม่ จะยังรันตัวเก่าโดยไม่มีอะไรฟ้อง
+และคำสั่งที่เพิ่งเพิ่มเข้าไปจะขึ้นว่าใช้ไม่ได้ ทั้งที่โค้ดถูกแล้ว
+
+เช็กว่าโหลดตัวใหม่แล้วจริงด้วย `/power-up status` — ถ้ายังเห็นข้อความแบบเก่า คือยังไม่โหลด
+
+*What a session runs is the installed copy, pinned to a **version**, not a commit: pushing code
+without raising the version changes nothing on a machine that already installed it. After
+updating, restart Claude Code or run `/reload-plugins` — without that it keeps running the old
+build silently, and a newly added command looks broken though the code is right. `/power-up
+status` tells you which build you are on.*
+
 License: MIT

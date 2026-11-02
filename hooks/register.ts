@@ -13,7 +13,7 @@
 // The rewrite uses the session's own Claude login through $.model.complete: no API key, no outside service.
 import type { Register } from 'claude-code'
 
-type Mode = 'ask' | 'auto' | 'off'
+type Mode = 'ask' | 'auto' | 'off' | 'fix'
 type Settings = { mode: Mode; minChars: number; model: string }
 
 const DEFAULTS: Settings = { mode: 'ask', minChars: 120, model: 'haiku' }
@@ -38,6 +38,58 @@ Rules:
 - If something important is ambiguous, add a final line asking the assistant to confirm that point first.
 - Output ONLY the rewritten prompt. Do not answer it, do not explain, no preamble, no quotes around it.`
 
+// Fix mode asks for a list of replacements rather than a corrected sentence.
+// Handed a sentence to return, a model sometimes returns a different sentence:
+// "เปิดจริง log ขึ้น" came back once as "เปิด screen lock ไว้". A replacement
+// has to name text that is really in the prompt, so the sentence survives by
+// construction and no wording in the instructions has to be trusted for it.
+const FIX_SYSTEM = `You correct individual wrong words in a person's message to an AI coding assistant.
+The message is dictated speech, Thai and English mixed, so words come out misheard or misspelled.
+
+Fix only these:
+- an English word heard as Thai letters that are not a real Thai word: 'เดพลอย' -> 'deploy', 'คมมิตร' -> 'commit', 'ไอแปร' -> 'iPad'
+- an English word heard as the wrong English word: 'Claude' -> 'cloud', 'Brand' -> 'branch', 'Depth' -> 'dev', 'course' -> 'Claude'
+- a plainly misspelled Thai or English word: 'ตรวจค้ำ' -> 'ตรวจคำ', 'recieve' -> 'receive'
+
+Use the conversation and the project you can see to decide which word was meant.
+
+Reply with JSON only, no prose, no code fence:
+{"fixes": [{"from": "<exact text in the message>", "to": "<the right word>"}]}
+
+Rules:
+- "from" must appear in the message exactly, character for character.
+- "from" must be ONE word with no spaces inside it. Never a phrase, clause or sentence.
+- Do not rephrase, reorder, shorten, expand, translate or repunctuate anything.
+- A correctly spelled Thai word is not an error, even if an English word exists for it.
+- When unsure, leave it alone. Changing nothing is better than changing it wrongly.
+- Nothing to fix: {"fixes": []}`
+
+const MAX_FROM = 14
+const MAX_TO = 20
+
+// Applies the model's replacements here rather than taking its sentence back.
+// A fix naming text that is not in the prompt, or spanning more than one word,
+// is dropped: that is the whole protection against a rewrite.
+function applyFixes(text: string, reply: string): { out: string; applied: string[] } {
+  let parsed: { fixes?: { from?: string; to?: string }[] }
+  try {
+    parsed = JSON.parse(reply.replace(/^```(?:json)?\s*|\s*```$/g, '').trim())
+  } catch {
+    return { out: text, applied: [] }
+  }
+  let out = text
+  const applied: string[] = []
+  for (const f of parsed.fixes ?? []) {
+    const from = String(f?.from ?? '')
+    const to = String(f?.to ?? '')
+    if (!from || from === to || !out.includes(from)) continue
+    if (/\s/.test(from) || from.length > MAX_FROM || to.length > MAX_TO) continue
+    out = out.split(from).join(to)
+    applied.push(`${from} → ${to}`)
+  }
+  return { out, applied }
+}
+
 const clamp = (n: number) => Math.max(20, Math.min(5000, Math.round(n)))
 
 export const register: Register = on => {
@@ -45,8 +97,8 @@ export const register: Register = on => {
     try {
       await $.command.register({
         name: 'power-up',
-        description: 'Prompt Power Up: ask | auto | off | min <chars> | model <name> | status',
-        argumentHint: '[ask|auto|off|min N|model haiku|status]',
+        description: 'Prompt Power Up: ask | auto | off | fix | min <chars> | model <name> | status',
+        argumentHint: '[ask|auto|off|fix|min N|model haiku|status]',
         immediate: true,
       })
     } catch (err) {
@@ -62,21 +114,24 @@ export const register: Register = on => {
     const s = withDefaults(await $.store.get('settings'))
     const [word = 'status', value = ''] = e.args.trim().split(/\s+/)
     const cmd = word.toLowerCase()
-    if (cmd === 'ask' || cmd === 'auto' || cmd === 'off') {
+    if (cmd === 'ask' || cmd === 'auto' || cmd === 'off' || cmd === 'fix') {
       s.mode = cmd
     } else if (cmd === 'min' && Number(value) > 0) {
       s.minChars = clamp(Number(value))
     } else if (cmd === 'model' && value) {
       s.model = value
     } else if (cmd !== 'status') {
-      return { text: 'Usage: /power-up ask | auto | off | min <chars> | model <name> | status' }
+      return { text: 'Usage: /power-up ask | auto | off | fix | min <chars> | model <name> | status' }
     }
     await $.store.set('settings', s)
 
     return {
       text:
         `Prompt Power Up: mode ${s.mode}, prompts of ${s.minChars}+ characters, model ${s.model}. ` +
-        `Start a prompt with ++ to always power it up, -- to skip.`,
+        (s.mode === 'fix'
+          ? 'fix แก้เฉพาะคำผิด คงประโยคเดิม ทำงานทุกความยาว (-- เพื่อข้าม). '
+          : 'Start a prompt with ++ to always power it up, -- to skip. ') +
+        `โหมด: ask เรียบเรียงแล้วถาม | auto เรียบเรียงแล้วส่ง | fix แก้เฉพาะคำผิด | off ปิด`,
     }
   })
 
@@ -100,6 +155,30 @@ export const register: Register = on => {
       }
     }
     if (!text.trim()) return next({ ...e, text })
+
+    // Fix mode: correct words, leave the sentence alone. It runs on every
+    // prompt regardless of minChars — a short one has as many misheard words
+    // as a long one — and sends straight on, because replacing บราน with
+    // branch is not a change worth stopping to confirm.
+    if (s.mode === 'fix' && !(text.startsWith('--'))) {
+      $.ui.status('🔤 กำลังตรวจคำ…')
+      const fr = await $.model.complete({
+        model: s.model,
+        system: FIX_SYSTEM,
+        prompt: text,
+        maxTokens: 1000,
+        timeoutMs: 20000,
+      })
+      $.ui.status(undefined)
+      if (!fr.isAnswered || !fr.text.trim()) {
+        $.ui.toast('ตรวจคำไม่ได้ตอนนี้ ส่งข้อความเดิมไป (could not check, sent as is)')
+        return next({ ...e, text })
+      }
+      const { out, applied } = applyFixes(text, fr.text)
+      if (applied.length) $.ui.log('🔤 แก้คำ: ' + applied.join(' · '))
+      return next({ ...e, text: out })
+    }
+
     if (!forced && (s.mode === 'off' || text.length < s.minChars)) return next({ ...e, text })
 
     $.ui.status('⚡ Power Up กำลังเรียบเรียง prompt…')

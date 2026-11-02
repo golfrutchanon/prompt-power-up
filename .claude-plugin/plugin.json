@@ -1,7 +1,7 @@
 {
   "name": "prompt-power-up",
-  "version": "0.1.0",
-  "description": "Turns long, rambling prompts (dictated or typed, any voice app) into a clear Super Power Prompt before Claude reads them. Thai + English.",
+  "version": "0.2.0",
+  "description": "Corrects the words you mis-dictated using the conversation's own context, or rewrites a rambling prompt, before Claude reads it. Three dials: mode, flow, power. Thai + English.",
   "author": {
     "name": "Copvang"
   },
@@ -10,7 +10,8 @@
     "dictation",
     "voice",
     "thai",
-    "mod"
+    "mod",
+    "typo"
   ],
   "license": "MIT"
 }

@@ -37,7 +37,7 @@ mod ไม่ได้รับประโยคใหม่กลับมา�
 | Power | โมเดล | effort | บริบทที่ `fix` อ่านย้อนหลัง |
 |---|---|---|---|
 | `eco` | Haiku | high | 2,000 ตัวอักษร · ย้อน 40 ข้อความ |
-| `medium` | Sonnet | high | 6,000 ตัวอักษร · ย้อน 40 ข้อความ |
+| `mid` | Sonnet | high | 6,000 ตัวอักษร · ย้อน 40 ข้อความ |
 | `full` | Opus | high | 12,000 ตัวอักษร · ย้อน 60 ข้อความ |
 
 **โมเดลของ mod แยกจากโมเดลที่คุณคุยแชทอยู่** คุยด้วย Opus แล้วให้ตรวจคำด้วย Haiku ได้ ไม่ต้องตรงกัน
@@ -70,12 +70,12 @@ mod ทำงานกับ "ข้อความในช่องแชท�
 /power-up off                 ปิด
 /power-up auto                ส่งทันที
 /power-up ask                 แสดงให้ตรวจก่อนส่ง
-/power-up eco | medium | full เลือกความฉลาด
+/power-up eco | mid | full    เลือกความฉลาด
 /power-up min 200             ความยาวขั้นต่ำของโหมด rewrite
 /power-up model sonnet        กำหนดโมเดลเอง (auto = ตามแชทหลัก)
 ```
 
-ตั้งพร้อมกันได้ในคำสั่งเดียว: `/power-up fix medium ask`
+ตั้งพร้อมกันได้ในคำสั่งเดียว: `/power-up fix mid ask`
 
 ### ค่าใช้จ่ายและความเป็นส่วนตัว
 - ใช้บัญชี Claude ที่ login ใน Claude Code อยู่แล้ว ไม่ต้องมี API key แยก ไม่ส่งข้อมูลไปบริการอื่น
@@ -116,7 +116,7 @@ Runs on prompts of 120+ characters (`/power-up min N`).
 | Power | model | effort | what `fix` reads back |
 |---|---|---|---|
 | `eco` | Haiku | high | 2,000 chars · 40 messages |
-| `medium` | Sonnet | high | 6,000 chars · 40 messages |
+| `mid` | Sonnet | high | 6,000 chars · 40 messages |
 | `full` | Opus | high | 12,000 chars · 60 messages |
 
 **The mod's model is independent of the model your chat runs on** — chat on Opus, check words with Haiku.
@@ -135,9 +135,9 @@ left alone.
 
 ### Commands
 ```
-/power-up status | fix | rewrite | off | auto | ask | eco | medium | full | min <chars> | model <name>|auto
+/power-up status | fix | rewrite | off | auto | ask | eco | mid | full | min <chars> | model <name>|auto
 ```
-Several at once: `/power-up fix medium ask`
+Several at once: `/power-up fix mid ask`
 
 ### Cost and privacy
 Uses your existing Claude Code login (no API key, no third-party service); each check counts toward your plan or

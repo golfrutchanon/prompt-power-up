@@ -201,7 +201,7 @@ test('fix holds the recent text to the tier budget, however long the chat is', a
 
 // Each tier is its own test: the hooks beneath the plugins are registered before the first `$`
 // call, so one test cannot stand up the engine twice.
-const tier = (power: 'eco' | 'medium' | 'full', model: string) =>
+const tier = (power: 'eco' | 'mid' | 'full', model: string) =>
   test(`Power ${power} calls ${model} at high effort`, async ($, on) => {
     const seen = engine(on, {
       settings: { mode: 'fix', flow: 'auto', power, minChars: 120 },
@@ -213,7 +213,7 @@ const tier = (power: 'eco' | 'medium' | 'full', model: string) =>
   })
 
 tier('eco', 'haiku')
-tier('medium', 'sonnet')
+tier('mid', 'sonnet')
 tier('full', 'opus')
 
 test('the mod model does not follow the chat model', async ($, on) => {
@@ -245,6 +245,15 @@ test('model <name> pins the model whatever the tier', async ($, on) => {
 })
 
 // ---- off, and settings written before the three dials --------------------------------------
+
+test("a stored 'medium' from 0.2.0 still runs the middle tier", async ($, on) => {
+  const seen = engine(on, {
+    settings: { mode: 'fix', flow: 'auto', power: 'medium', minChars: 120 },
+    reply: () => '{"fixes":[]}',
+  })
+  await send($, 'คมมิต ให้ด้วย')
+  expect(seen.models[0]).toBe('sonnet')
+})
 
 test('off lets everything through untouched', async ($, on) => {
   const seen = engine(on, { settings: { mode: 'off', flow: 'ask', power: 'eco', minChars: 120 } })

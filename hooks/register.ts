@@ -8,7 +8,7 @@
 // Three dials, each set on its own:
 //   Mode   rewrite  restructure the whole prompt | fix  correct single words only | off
 //   Flow   auto     send it                      | ask  show it, the person picks
-//   Power  eco (haiku) | medium (sonnet) | full (opus)
+//   Power  eco (haiku) | mid (sonnet) | full (opus)
 //
 // Power picks the judge, and how far back Fix mode reads. Fix reads the conversation through
 // $.session.messages() under a fixed character budget, so what it sends never grows with the
@@ -22,7 +22,7 @@ import type { Register, EngineInterface, ModelEffort, PromptSubmitInput } from '
 
 type Mode = 'rewrite' | 'fix' | 'off'
 type Flow = 'auto' | 'ask'
-type Power = 'eco' | 'medium' | 'full'
+type Power = 'eco' | 'mid' | 'full'
 
 type Settings = {
   mode: Mode
@@ -49,7 +49,7 @@ type Tier = {
 // conversation Fix reads back — not by how hard the model thinks.
 const POWER: Record<Power, Tier> = {
   eco: { model: 'haiku', effort: 'high', chars: 2000, reach: 40, timeoutMs: 20000 },
-  medium: { model: 'sonnet', effort: 'high', chars: 6000, reach: 40, timeoutMs: 30000 },
+  mid: { model: 'sonnet', effort: 'high', chars: 6000, reach: 40, timeoutMs: 30000 },
   full: { model: 'opus', effort: 'high', chars: 12000, reach: 60, timeoutMs: 45000 },
 }
 
@@ -208,6 +208,8 @@ function withDefaults(saved: unknown): Settings {
     s.mode = 'rewrite'
     s.flow = was
   }
+  // The middle tier was called 'medium' in 0.2.0; a stored one would index POWER as undefined.
+  if ((old as { power?: string }).power === 'medium') s.power = 'mid'
   return s
 }
 
@@ -362,8 +364,8 @@ export const register: Register = on => {
     try {
       await $.command.register({
         name: 'power-up',
-        description: 'Prompt Power Up: rewrite | fix | off · auto | ask · eco | medium | full',
-        argumentHint: '[rewrite|fix|off] [auto|ask] [eco|medium|full] [min N] [model X|auto] [status]',
+        description: 'Prompt Power Up: rewrite | fix | off · auto | ask · eco | mid | full',
+        argumentHint: '[rewrite|fix|off] [auto|ask] [eco|mid|full] [min N] [model X|auto] [status]',
         immediate: true,
       })
     } catch (err) {
@@ -378,14 +380,15 @@ export const register: Register = on => {
     const words = e.args.trim().split(/\s+/).filter(Boolean)
     let bad = ''
 
-    // Each word sets its own dial, so `/power-up fix medium ask` is one call.
+    // Each word sets its own dial, so `/power-up fix mid ask` is one call.
     for (let i = 0; i < words.length; i++) {
       const word = words[i] ?? ''
       const w = word.toLowerCase()
       const nextWord = words[i + 1]
       if (w === 'rewrite' || w === 'fix' || w === 'off') s.mode = w
       else if (w === 'auto' || w === 'ask') s.flow = w
-      else if (w === 'eco' || w === 'medium' || w === 'full') s.power = w
+      else if (w === 'eco' || w === 'mid' || w === 'full') s.power = w
+      else if (w === 'medium') s.power = 'mid'
       else if (w === 'min' && nextWord !== undefined && Number(nextWord) > 0) {
         s.minChars = clamp(Number(nextWord))
         i++
@@ -398,7 +401,7 @@ export const register: Register = on => {
     if (bad) {
       return {
         text:
-          `ไม่รู้จัก "${bad}" · Usage: /power-up [rewrite|fix|off] [auto|ask] [eco|medium|full] [min N] [model <name>|auto] [status]`,
+          `ไม่รู้จัก "${bad}" · Usage: /power-up [rewrite|fix|off] [auto|ask] [eco|mid|full] [min N] [model <name>|auto] [status]`,
       }
     }
     await $.store.set('settings', s)
@@ -415,7 +418,7 @@ export const register: Register = on => {
             (s.mode === 'rewrite' ? `ทำงานกับ prompt ตั้งแต่ ${s.minChars} ตัวอักษรขึ้นไป` : 'ทำงานทุกความยาว') +
             `\nMode: rewrite เรียบเรียงใหม่ทั้งประโยค | fix แก้เฉพาะคำผิด คงประโยคเดิม | off ปิด` +
             `\nFlow: auto ส่งทันที | ask แสดงให้ตรวจก่อน` +
-            `\nPower: eco haiku | medium sonnet | full opus — model แยกจากแชทหลัก (model auto เพื่อตามแชท)`,
+            `\nPower: eco haiku | mid sonnet | full opus — model แยกจากแชทหลัก (model auto เพื่อตามแชท)`,
     }
   })
 

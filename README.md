@@ -1,81 +1,149 @@
 # ⚡ Prompt Power Up — mod สำหรับ Claude Code
 
-เปลี่ยนข้อความยาวๆ ที่พูดวกไปวนมา ให้เป็น "Super Power Prompt" ที่ชัดเจน ก่อน Claude จะอ่าน
-*Turns long, rambling prompts into a clear "Super Power Prompt" before Claude reads them.*
+แก้คำที่พูดเพี้ยน หรือเรียบเรียง prompt ที่วกวนให้ชัด ก่อน Claude จะอ่าน
+*Corrects the words you dictated, or rewrites a rambling prompt, before Claude reads it.*
 
 ---
 
 ## ภาษาไทย
 
-### ทำอะไร
-เวลาพูดสั่ง AI ยาวๆ ผ่านไมค์ ข้อความมักมีคำเติม (เอ่อ, แบบว่า, อะไรงี้) ศัพท์ไทยปนอังกฤษ ความคิดสลับไปมา
-mod นี้ดักข้อความตอนคุณกด Enter แล้วให้ Claude (โมเดลเล็ก Haiku) เรียบเรียงใหม่:
-- ตัดคำเติมและคำซ้ำ เก็บเฉพาะสิ่งที่ตั้งใจจริง (พูดแก้ตัวเองก็เก็บอันสุดท้าย)
-- จัดเป็น เป้าหมาย / บริบท / เงื่อนไข / ผลลัพธ์ที่ต้องการ (คำขอสั้นๆ ก็ยังสั้น)
-- ใช้ภาษาเดิมที่คุณพูด ไทยยังเป็นไทย ศัพท์เทคนิค ชื่อไฟล์ และคำสั่งคงไว้ตามเดิม
-- ไม่เพิ่มสิ่งที่คุณไม่ได้พูด
+### สองโหมด เลือกอย่างใดอย่างหนึ่ง
 
-แล้วถามคุณก่อนส่งว่าจะใช้ฉบับไหน: **ใช้ฉบับ Power Up / ใช้ข้อความเดิม / กลับไปแก้**
-(ฉบับ Power Up แสดงใน transcript ให้อ่านก่อนเลือก)
+**Mode `fix` — แก้เฉพาะคำผิด ประโยคเดิมอยู่ครบ**
+เวลาพูดสั่ง AI คำอังกฤษมักออกมาเป็นไทยที่ไม่ใช่คำ (`เดพลอย` → `deploy`) หรือกลายเป็นคำอังกฤษผิดตัว
+(`course` → `Claude`, `บราน` → `branch`) โหมดนี้แก้แค่คำพวกนั้น **ไม่เรียบเรียงประโยคใหม่** — พูด 5 คำได้ 5 คำ
+
+mod ไม่ได้รับประโยคใหม่กลับมาจากโมเดล มันขอ**รายการคำแทน** `{from, to}` แล้วแทนให้เองในเครื่อง
+คำที่ไม่มีอยู่จริงในข้อความ หรือกินเกินหนึ่งคำ จะถูกทิ้ง ประโยคของคุณจึงรอดโดยโครงสร้าง ไม่ใช่โดยการขอร้องโมเดล
+
+โหมดนี้อ่านบทสนทนาที่ผ่านมาด้วย เพื่อรู้ว่าศัพท์ในวงสนทนาสะกดว่าอะไร — ทำงานได้ทุกความยาว
+
+**Mode `rewrite` — เรียบเรียงใหม่ทั้งประโยค**
+ตัดคำเติม (เอ่อ, แบบว่า, อะไรงี้) และคำซ้ำ เก็บเฉพาะสิ่งที่ตั้งใจจริง (พูดแก้ตัวเองก็เก็บอันสุดท้าย)
+จัดเป็น เป้าหมาย / บริบท / เงื่อนไข / ผลลัพธ์ที่ต้องการ · ใช้ภาษาเดิมที่คุณพูด ศัพท์เทคนิค ชื่อไฟล์ คำสั่ง คงไว้
+ไม่เพิ่มสิ่งที่คุณไม่ได้พูด · ทำงานกับ prompt ยาวตั้งแต่ 120 ตัวอักษรขึ้นไป (ปรับได้)
+
+### Flow — จะให้ส่งเลย หรือให้ดูก่อน
+
+| Flow | ผล |
+|---|---|
+| `auto` | ทำแล้วส่งทันที (ถ้าไม่มีอะไรต้องแก้ ก็ส่งของเดิมเฉยๆ) |
+| `ask` | แสดงฉบับใหม่ใน transcript แล้วให้เลือก **ส่งฉบับนี้ / ตรวจใหม่ / ใช้ข้อความเดิม / กลับไปแก้** |
+
+`ตรวจใหม่` สั่งให้ลองอีกรอบ ได้ถึง 3 รอบ
+
+### Power — ความฉลาดของตัวตรวจ
+
+| Power | โมเดล | effort | บริบทที่ `fix` อ่านย้อนหลัง |
+|---|---|---|---|
+| `eco` | Haiku | high | 2,000 ตัวอักษร · ย้อน 40 ข้อความ |
+| `medium` | Sonnet | high | 6,000 ตัวอักษร · ย้อน 40 ข้อความ |
+| `full` | Opus | high | 12,000 ตัวอักษร · ย้อน 60 ข้อความ |
+
+**โมเดลของ mod แยกจากโมเดลที่คุณคุยแชทอยู่** คุยด้วย Opus แล้วให้ตรวจคำด้วย Haiku ได้ ไม่ต้องตรงกัน
+(ถ้าอยากให้ตามแชท สั่ง `/power-up model auto`)
+
+ทั้งสามระดับใช้ `effort: high` เหมือนกัน — ต่างกันที่คนตัดสิน ไม่ใช่ที่ความพยายาม
+
+### บริบทที่ส่ง ไม่โตตามแชท
+
+`fix` ประกอบบริบทขึ้นมาเองจากสองชั้น ไม่ได้ส่ง context window ทั้งก้อน:
+
+1. **บัญชีคำ** — ดึงชื่อไฟล์ path ตัวระบุ และคำอังกฤษจากข้อความย้อนหลัง มา dedupe (ทำในเครื่อง ไม่เสีย token)
+2. **เนื้อความล่าสุด** — ข้อความย้อนขึ้นไปจนเต็มงบตัวอักษรของ Power ที่เลือก
+
+**ผลลัพธ์ของ tool ไม่ถูกส่งไปเลย** — ไฟล์ที่อ่าน ผล grep ผล bash ทั้งหมดถูกตัดออก มันกินงบหมดในท่อนเดียว
+และไม่ได้ช่วยตัดสินว่าคำไหนเพี้ยน · แปลว่าแชทที่ใช้ context ไปแล้ว 90% เสียค่าตรวจคำเท่าแชทเปล่า
 
 ### ใช้ได้กับ voice input ทุกตัว
 mod ทำงานกับ "ข้อความในช่องแชทตอนกดส่ง" ไม่สนว่าข้อความมาจากไหน ใช้ได้กับ:
 พิมพ์เอง, วาง, voice input ของ Claude Code, macOS Dictation, MacWhisper, Wispr Flow, VoiceInk, superwhisper
 หรือแอปแปลงเสียงที่คุณทำเอง ขอแค่แอปพิมพ์หรือวางข้อความลงช่องที่เคอร์เซอร์อยู่
 
-### เมื่อไหร่ถึงทำงาน
-| ข้อความ | ผล |
-|---|---|
-| ยาวตั้งแต่ 120 ตัวอักษร (ปรับได้) | Power Up |
-| ขึ้นต้นด้วย `++` | Power Up เสมอ (ตัด `++` ออก) |
-| ขึ้นต้นด้วย `--` | ส่งตามเดิม (ตัด `--` ออก) |
-| ขึ้นต้นด้วยป้ายจากแอปพูด (U+2063 หรือ 🎙️) | Power Up เสมอ |
-| คำสั่ง `/...` | ไม่แตะ |
+คำสั่ง `/...` ไม่ถูกแตะ
 
 ### คำสั่ง
 ```
-/power-up status        ดูการตั้งค่า
-/power-up ask           ถามก่อนส่งทุกครั้ง (ค่าเริ่มต้น)
-/power-up auto          เรียบเรียงแล้วส่งเลย ไม่ถาม
-/power-up off           ปิด (ยังใช้ ++ ได้)
-/power-up min 200       เปลี่ยนความยาวขั้นต่ำ
-/power-up model sonnet  เปลี่ยนโมเดลที่ใช้เรียบเรียง (ค่าเริ่มต้น haiku)
+/power-up status              ดูการตั้งค่า
+/power-up fix                 เปิดโหมดแก้คำผิด
+/power-up rewrite             เปิดโหมดเรียบเรียงใหม่
+/power-up off                 ปิด
+/power-up auto                ส่งทันที
+/power-up ask                 แสดงให้ตรวจก่อนส่ง
+/power-up eco | medium | full เลือกความฉลาด
+/power-up min 200             ความยาวขั้นต่ำของโหมด rewrite
+/power-up model sonnet        กำหนดโมเดลเอง (auto = ตามแชทหลัก)
 ```
+
+ตั้งพร้อมกันได้ในคำสั่งเดียว: `/power-up fix medium ask`
 
 ### ค่าใช้จ่ายและความเป็นส่วนตัว
 - ใช้บัญชี Claude ที่ login ใน Claude Code อยู่แล้ว ไม่ต้องมี API key แยก ไม่ส่งข้อมูลไปบริการอื่น
-- การเรียบเรียงแต่ละครั้งนับเป็นการใช้งานของ plan หรือ API key ของคุณ (Haiku ถูกและเร็ว)
+- การตรวจแต่ละครั้งนับเป็นการใช้งานของ plan หรือ API key ของคุณ · `eco` ถูกและเร็วที่สุด
+- โหมด `fix` ส่งบทสนทนาย้อนหลังไปด้วยตามตารางข้างบน — ถ้าไม่อยากให้ส่ง ใช้ `rewrite` ซึ่งส่งแค่ prompt ที่พิมพ์
 - mod รันด้วยสิทธิ์ของเครื่องคุณเหมือน mod ทุกตัว อ่านโค้ดได้ใน `hooks/register.ts` (ไฟล์เดียว)
 
 ### สำหรับคนทำแอปแปลงเสียง
-ให้แอปใส่อักขระ U+2063 (INVISIBLE SEPARATOR มองไม่เห็น) ไว้หน้าข้อความที่วางลงช่องแชท
-mod จะรู้ว่าข้อความมาจากแอปคุณและ Power Up ให้ทุกครั้ง ไม่ต้องรอให้ยาวถึงเกณฑ์
+ให้แอปใส่อักขระ U+2063 (INVISIBLE SEPARATOR มองไม่เห็น) ไว้หน้าข้อความที่วางลงช่องแชทได้
+mod จะตัดอักขระนั้นออกให้ก่อนส่ง เพื่อไม่ให้มันไปถึงโมเดล
 
 ---
 
 ## English
 
-### What it does
-Dictated prompts are full of fillers, Thai/English mixed terms and ideas out of order. When you press Enter, this mod has
-Claude (Haiku) rewrite the prompt: fillers and repeats removed, only your final intent kept, organised as
-Goal / Context / Requirements / Expected output, in the language you used, with nothing added. Then it asks:
-**Use Power Up / Keep original / Back to edit** (the Power Up version is shown in the transcript first).
+### Two modes, pick one
+
+**`fix` — corrects single words, leaves the sentence alone.** Dictated English comes out as Thai letters
+that are not a word (`เดพลอย` → `deploy`) or as the wrong English word (`course` → `Claude`, `Brand` → `branch`).
+This mode fixes those and nothing else: say five words, get five words.
+
+It never takes a sentence back from the model. It asks for a list of `{from, to}` replacements and applies them
+itself; a replacement naming text that is not in your message, or spanning more than one word, is dropped. Your
+sentence survives by construction, not because the instructions asked nicely.
+
+It reads the conversation so far to know how the terms in play are spelled, and runs at every prompt length.
+
+**`rewrite` — restructures the whole prompt.** Fillers and repeats removed, only your final intent kept,
+organised as Goal / Context / Requirements / Expected output, in the language you used, with nothing added.
+Runs on prompts of 120+ characters (`/power-up min N`).
+
+### Flow
+`auto` sends it · `ask` shows it and offers **Send this / Check again / Keep original / Back to edit**
+(Check again retries, up to 3 rounds).
+
+### Power
+
+| Power | model | effort | what `fix` reads back |
+|---|---|---|---|
+| `eco` | Haiku | high | 2,000 chars · 40 messages |
+| `medium` | Sonnet | high | 6,000 chars · 40 messages |
+| `full` | Opus | high | 12,000 chars · 60 messages |
+
+**The mod's model is independent of the model your chat runs on** — chat on Opus, check words with Haiku.
+`/power-up model auto` follows the chat instead. All three tiers use `effort: high`: the tiers differ by judge.
+
+### The context it sends never grows with the chat
+`fix` builds its own context from a term list (file names, paths, identifiers, English words — extracted locally,
+no tokens) plus recent message text up to the tier's character budget. **Tool output is never sent**: file reads,
+grep results and bash output are all excluded. A session 90% through its context window costs the same as an
+empty one. It does not use `$.model.fork`, which would send the whole window and be locked to the chat's model.
 
 ### Works with any voice input
 It reads the prompt box at submit time, so the text can come from typing, pasting, Claude Code's own voice input,
-macOS Dictation, MacWhisper, Wispr Flow, VoiceInk, superwhisper, or your own dictation app.
-
-### When it runs
-- prompts of 120+ characters (`/power-up min N` to change)
-- `++` at the start: always (removed) · `--` at the start: never (removed)
-- U+2063 or 🎙️ at the start (a dictation app's marker): always · slash commands: never
+macOS Dictation, MacWhisper, Wispr Flow, VoiceInk, superwhisper, or your own dictation app. Slash commands are
+left alone.
 
 ### Commands
-`/power-up status | ask | auto | off | min <chars> | model <name>`
+```
+/power-up status | fix | rewrite | off | auto | ask | eco | medium | full | min <chars> | model <name>|auto
+```
+Several at once: `/power-up fix medium ask`
 
 ### Cost and privacy
-Uses your existing Claude Code login (no API key, no third-party service); each rewrite counts toward your plan or key.
-Mods run with your permissions; the whole mod is one readable file, `hooks/register.ts`.
+Uses your existing Claude Code login (no API key, no third-party service); each check counts toward your plan or
+key, and `eco` is the cheapest. `fix` sends recent conversation as the table above describes — use `rewrite` if
+you would rather send only the prompt you typed. Mods run with your permissions; the whole mod is one readable
+file, `hooks/register.ts`.
 
 ---
 

@@ -1,56 +1,262 @@
 import { expect, test } from 'claude-code/testing'
 
-const LONG = 'เอ่อ คือว่าอยากให้ช่วยทำ usage bar แบบว่า ที่มันโชว์ token อะ ไม่ใช่ๆ เอาเป็น progress ด้วย แล้วก็เตือนตอนใกล้ limit นะ อะไรงี้ครับ'.repeat(2)
+const LONG =
+  'เอ่อ คือว่าอยากให้ช่วยทำ usage bar แบบว่า ที่มันโชว์ token อะ ไม่ใช่ๆ เอาเป็น progress ด้วย แล้วก็เตือนตอนใกล้ limit นะ อะไรงี้ครับ'.repeat(
+    2,
+  )
 const BETTER = 'Goal: add a usage bar that shows progress and warns near the limit.'
 
-// The hooks below stand for the engine: the model answers, the store is empty, the prompt enters.
-// $.ui.ask is a tool.call of AskUserQuestion, answered here with the label the test picks.
-const engine = (on: any, pick: string) => {
-  on('store.get', () => ({ value: undefined }))
+const SEND = 'ส่งฉบับนี้ (Send this)'
+const RETRY = 'ตรวจใหม่ (Check again)'
+const KEEP = 'ใช้ข้อความเดิม (Keep original)'
+const EDIT = 'กลับไปแก้ (Back to edit)'
+
+type Reply = { isAnswered: true; text: string; usage: Record<string, never> }
+const says = (text: string): Reply => ({ isAnswered: true, text, usage: {} })
+
+/** What one run of the engine saw, so a test can assert on the request and not only the answer. */
+type Seen = { models: string[]; efforts: string[]; prompts: string[]; picks: number }
+
+// The hooks below stand for the engine: the model answers, the store holds `settings`, the
+// transcript holds `messages`, the prompt enters. $.ui.ask is a tool.call of AskUserQuestion,
+// answered with the labels the test lists, one per round.
+const engine = (
+  on: any,
+  opts: { picks?: string[]; settings?: unknown; reply?: (prompt: string) => string; messages?: unknown[] } = {},
+): Seen => {
+  const seen: Seen = { models: [], efforts: [], prompts: [], picks: 0 }
+  on('store.get', () => ({ value: opts.settings }))
   on('store.set', () => ({ value: undefined }))
-  on('model.complete', () => ({ value: { isAnswered: true, text: BETTER, usage: {} } }))
-  on('tool.call', { tool: 'AskUserQuestion' }, (_: unknown, e: any) => ({
-    result: { questions: e.questions, answers: { [e.questions[0].question]: pick } },
-  }))
+  on('session.messages', () => ({ value: opts.messages ?? [] }))
+  on('session.model', () => ({ value: 'claude-opus-5' }))
+  on('model.complete', (_: unknown, e: any) => {
+    seen.models.push(e.model)
+    seen.efforts.push(e.effort)
+    const prompt = typeof e.prompt === 'string' ? e.prompt : e.prompt.map((b: any) => b.text).join('')
+    seen.prompts.push(prompt)
+    return { value: says(opts.reply ? opts.reply(prompt) : BETTER) }
+  })
+  on('tool.call', { tool: 'AskUserQuestion' }, (_: unknown, e: any) => {
+    const pick = opts.picks?.[seen.picks] ?? KEEP
+    seen.picks++
+    return { result: { questions: e.questions, answers: { [e.questions[0].question]: pick } } }
+  })
   on('ui.log', () => ({ value: undefined }))
   on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
   on('prompt.submit', (_: unknown, e: any) => ({ text: e.text, context: e.context }))
+  return seen
 }
 
-test('a long prompt is replaced by the Power Up version when the user picks it', async ($, on) => {
-  engine(on, 'ใช้ฉบับ Power Up (Use Power Up)')
-  const r: any = await $.prompt.submit({ text: LONG, origin: { kind: 'composer' }, wait: false } as any)
-  expect(r.text).toBe(BETTER)
+const send = ($: any, text: string) =>
+  $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false } as any) as Promise<any>
+
+// ---- Mode: rewrite -------------------------------------------------------------------------
+
+test('rewrite + ask: the Power Up version is sent when the person picks it', async ($, on) => {
+  engine(on, { picks: [SEND] })
+  expect((await send($, LONG)).text).toBe(BETTER)
 })
 
-test('keeping the original sends what was typed', async ($, on) => {
-  engine(on, 'ใช้ข้อความเดิม (Keep original)')
-  const r: any = await $.prompt.submit({ text: LONG, origin: { kind: 'composer' }, wait: false } as any)
-  expect(r.text).toBe(LONG)
+test('rewrite + ask: keeping the original sends what was typed', async ($, on) => {
+  engine(on, { picks: [KEEP] })
+  expect((await send($, LONG)).text).toBe(LONG)
 })
 
-test('a short prompt goes through untouched', async ($, on) => {
-  engine(on, 'ใช้ฉบับ Power Up (Use Power Up)')
-  const r: any = await $.prompt.submit({ text: 'ok ทำเลย', origin: { kind: 'composer' }, wait: false } as any)
-  expect(r.text).toBe('ok ทำเลย')
+test('rewrite + ask: back to edit drops the prompt', async ($, on) => {
+  engine(on, { picks: [EDIT] })
+  expect(typeof (await send($, LONG)).drop).toBe('string')
 })
 
-test('++ forces a short prompt, a dictation-app marker too', async ($, on) => {
-  engine(on, 'ใช้ฉบับ Power Up (Use Power Up)')
-  const a: any = await $.prompt.submit({ text: '++ fix bug', origin: { kind: 'composer' }, wait: false } as any)
-  expect(a.text).toBe(BETTER)
-  const b: any = await $.prompt.submit({ text: '⁣fix bug', origin: { kind: 'composer' }, wait: false } as any)
-  expect(b.text).toBe(BETTER)
+test('rewrite + ask: ตรวจใหม่ runs another round, then sends', async ($, on) => {
+  const seen = engine(on, { picks: [RETRY, RETRY, SEND] })
+  expect((await send($, LONG)).text).toBe(BETTER)
+  expect(seen.models.length).toBe(3)
 })
 
-test('-- skips and is removed', async ($, on) => {
-  engine(on, 'ใช้ฉบับ Power Up (Use Power Up)')
-  const r: any = await $.prompt.submit({ text: '-- ' + LONG, origin: { kind: 'composer' }, wait: false } as any)
-  expect(r.text).toBe(LONG)
+test('rewrite + auto sends without asking', async ($, on) => {
+  const seen = engine(on, { settings: { mode: 'rewrite', flow: 'auto', power: 'eco', minChars: 120 } })
+  expect((await send($, LONG)).text).toBe(BETTER)
+  expect(seen.picks).toBe(0)
 })
 
-test('back to edit drops the prompt', async ($, on) => {
-  engine(on, 'กลับไปแก้ (Back to edit)')
-  const r: any = await $.prompt.submit({ text: LONG, origin: { kind: 'composer' }, wait: false } as any)
-  expect(typeof r.drop).toBe('string')
+test('rewrite leaves a prompt shorter than minChars alone', async ($, on) => {
+  const seen = engine(on, { picks: [SEND] })
+  expect((await send($, 'ok ทำเลย')).text).toBe('ok ทำเลย')
+  expect(seen.models.length).toBe(0)
+})
+
+// ---- The shortcuts are gone ---------------------------------------------------------------
+
+test('++ and -- are no longer shortcuts: they are ordinary text', async ($, on) => {
+  engine(on, { picks: [SEND, SEND] })
+  // `--` used to skip; a long prompt now gets rewritten like any other.
+  expect((await send($, '-- ' + LONG)).text).toBe(BETTER)
+  // `++` used to force a short prompt; it is below minChars, so nothing happens and the
+  // characters stay in the text rather than being eaten.
+  expect((await send($, '++ fix bug')).text).toBe('++ fix bug')
+})
+
+test('a dictation-app marker is stripped but forces nothing', async ($, on) => {
+  const seen = engine(on, { picks: [SEND] })
+  expect((await send($, '⁣fix bug')).text).toBe('fix bug')
+  expect(seen.models.length).toBe(0)
+})
+
+// ---- Mode: fix -----------------------------------------------------------------------------
+
+const FIX_ON = { mode: 'fix', flow: 'auto', power: 'eco', minChars: 120 }
+
+test('fix replaces the words it names and leaves the sentence alone', async ($, on) => {
+  engine(on, {
+    settings: FIX_ON,
+    reply: () => '{"fixes":[{"from":"course","to":"Claude"},{"from":"บราน","to":"branch"}]}',
+  })
+  const r = await send($, 'ลอง course code กับ บราน ใหม่')
+  expect(r.text).toBe('ลอง Claude code กับ branch ใหม่')
+})
+
+test('fix runs on a short prompt, where rewrite would not', async ($, on) => {
+  const seen = engine(on, { settings: FIX_ON, reply: () => '{"fixes":[{"from":"คมมิต","to":"commit"}]}' })
+  expect((await send($, 'คมมิต')).text).toBe('commit')
+  expect(seen.models.length).toBe(1)
+})
+
+test('fix drops a replacement whose "from" is not in the message', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: () => '{"fixes":[{"from":"ไม่มีคำนี้","to":"anything"}]}' })
+  const typed = 'เปิด log ขึ้นมาดู'
+  expect((await send($, typed)).text).toBe(typed)
+})
+
+test('fix drops a replacement spanning more than one word, so it cannot rewrite', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: () => '{"fixes":[{"from":"เปิดจริง log","to":"เปิด screen lock ไว้"}]}' })
+  const typed = 'เปิดจริง log ขึ้น'
+  expect((await send($, typed)).text).toBe(typed)
+})
+
+test('fix sends the message as typed when the reply is not JSON', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: () => 'sure, here is the corrected sentence!' })
+  const typed = 'เปิด log ขึ้นมาดู'
+  expect((await send($, typed)).text).toBe(typed)
+})
+
+test('fix with nothing to change never asks, even under the ask flow', async ($, on) => {
+  const seen = engine(on, {
+    settings: { ...FIX_ON, flow: 'ask' },
+    reply: () => '{"fixes":[]}',
+  })
+  const typed = 'เปิด log ขึ้นมาดู'
+  expect((await send($, typed)).text).toBe(typed)
+  expect(seen.picks).toBe(0)
+})
+
+test('fix sends the conversation it was given: the term list and the recent text', async ($, on) => {
+  const seen = engine(on, {
+    settings: FIX_ON,
+    reply: () => '{"fixes":[]}',
+    messages: [
+      { role: 'user', text: 'แก้ polish.py ใน worktree ให้หน่อย', toolUses: [] },
+      { role: 'assistant', text: 'แก้ที่ thai_dictate/polish.py แล้วครับ', toolUses: [] },
+    ],
+  })
+  await send($, 'คมมิต ให้ด้วย')
+  const sent = seen.prompts[0] ?? ''
+  expect(sent.includes('<terms>')).toBe(true)
+  expect(sent.includes('polish.py')).toBe(true)
+  expect(sent.includes('worktree')).toBe(true)
+  expect(sent.includes('<recent>')).toBe(true)
+  expect(sent.includes('<message>\nคมมิต ให้ด้วย\n</message>')).toBe(true)
+})
+
+test('fix never sends tool output, however much of it the transcript holds', async ($, on) => {
+  const seen = engine(on, {
+    settings: FIX_ON,
+    reply: () => '{"fixes":[]}',
+    messages: [
+      {
+        role: 'assistant',
+        text: 'อ่านไฟล์ให้แล้ว',
+        toolUses: [{ name: 'Read', text: 'SECRET_DUMP '.repeat(500), result: 'SECRET_DUMP' }],
+      },
+    ],
+  })
+  await send($, 'คมมิต ให้ด้วย')
+  expect((seen.prompts[0] ?? '').includes('SECRET_DUMP')).toBe(false)
+})
+
+test('fix holds the recent text to the tier budget, however long the chat is', async ($, on) => {
+  const many = Array.from({ length: 200 }, (_, i) => ({
+    role: i % 2 ? 'assistant' : 'user',
+    text: 'ประโยคยาวพอประมาณสำหรับการทดสอบงบตัวอักษร '.repeat(10),
+    toolUses: [],
+  }))
+  const seen = engine(on, { settings: FIX_ON, reply: () => '{"fixes":[]}', messages: many })
+  await send($, 'คมมิต ให้ด้วย')
+  const recent = (seen.prompts[0] ?? '').split('<recent>')[1]?.split('</recent>')[0] ?? ''
+  // eco's ceiling is 2000 characters; the role labels and joins add a little on top.
+  expect(recent.length < 2600).toBe(true)
+})
+
+// ---- Power ---------------------------------------------------------------------------------
+
+// Each tier is its own test: the hooks beneath the plugins are registered before the first `$`
+// call, so one test cannot stand up the engine twice.
+const tier = (power: 'eco' | 'medium' | 'full', model: string) =>
+  test(`Power ${power} calls ${model} at high effort`, async ($, on) => {
+    const seen = engine(on, {
+      settings: { mode: 'fix', flow: 'auto', power, minChars: 120 },
+      reply: () => '{"fixes":[]}',
+    })
+    await send($, 'คมมิต ให้ด้วย')
+    expect(seen.models[0]).toBe(model)
+    expect(seen.efforts[0]).toBe('high')
+  })
+
+tier('eco', 'haiku')
+tier('medium', 'sonnet')
+tier('full', 'opus')
+
+test('the mod model does not follow the chat model', async ($, on) => {
+  const seen = engine(on, {
+    settings: { mode: 'fix', flow: 'auto', power: 'eco', minChars: 120 },
+    reply: () => '{"fixes":[]}',
+  })
+  await send($, 'คมมิต ให้ด้วย')
+  // The chat runs claude-opus-5 (session.model above); eco still calls haiku.
+  expect(seen.models[0]).toBe('haiku')
+})
+
+test('model auto is the way to follow the chat model', async ($, on) => {
+  const seen = engine(on, {
+    settings: { mode: 'fix', flow: 'auto', power: 'eco', minChars: 120, modelOverride: 'auto' },
+    reply: () => '{"fixes":[]}',
+  })
+  await send($, 'คมมิต ให้ด้วย')
+  expect(seen.models[0]).toBe('claude-opus-5')
+})
+
+test('model <name> pins the model whatever the tier', async ($, on) => {
+  const seen = engine(on, {
+    settings: { mode: 'fix', flow: 'auto', power: 'full', minChars: 120, modelOverride: 'haiku' },
+    reply: () => '{"fixes":[]}',
+  })
+  await send($, 'คมมิต ให้ด้วย')
+  expect(seen.models[0]).toBe('haiku')
+})
+
+// ---- off, and settings written before the three dials --------------------------------------
+
+test('off lets everything through untouched', async ($, on) => {
+  const seen = engine(on, { settings: { mode: 'off', flow: 'ask', power: 'eco', minChars: 120 } })
+  expect((await send($, LONG)).text).toBe(LONG)
+  expect(seen.models.length).toBe(0)
+})
+
+test('a setting written when mode held the flow becomes rewrite with that flow', async ($, on) => {
+  // The old shape: { mode: 'auto', minChars: 120, model: 'haiku' }. `model` is read under its
+  // new name now, so the old value must not pin every tier to haiku.
+  const seen = engine(on, { settings: { mode: 'auto', minChars: 120, model: 'sonnet' } })
+  expect((await send($, LONG)).text).toBe(BETTER)
+  expect(seen.picks).toBe(0)
+  expect(seen.models[0]).toBe('haiku')
 })

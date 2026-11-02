@@ -1,28 +1,67 @@
-// Prompt Power Up — turn a long, rambling prompt into a clear "Super Power Prompt" before Claude reads it.
+// Prompt Power Up — correct the words you dictated, or rewrite a rambling prompt,
+// before Claude reads it.
 //
-// It works on whatever is in the prompt box when Enter is pressed, so the text can come from typing,
-// pasting, Claude Code's own voice input, or any dictation app that types into the focused field
-// (macOS Dictation, MacWhisper, Wispr Flow, VoiceInk, superwhisper, your own app).
+// It works on whatever is in the prompt box when Enter is pressed, so the text can come from
+// typing, pasting, Claude Code's own voice input, or any dictation app that types into the
+// focused field (macOS Dictation, MacWhisper, Wispr Flow, VoiceInk, superwhisper).
 //
-// When it runs (a prompt the user sent, not a slash command):
-//   - the prompt starts with "++"            -> always power it up ("++" is removed)
-//   - the prompt starts with "--"            -> never ("--" is removed, sent as is)
-//   - the prompt starts with the app marker  -> always (a dictation app can prepend U+2063 or "🎙️")
-//   - otherwise, in auto/ask mode, only prompts of at least `minChars` characters
-// Mode: ask (show the new version, the user picks) | auto (send the new version) | off.
-// The rewrite uses the session's own Claude login through $.model.complete: no API key, no outside service.
-import type { Register } from 'claude-code'
+// Three dials, each set on its own:
+//   Mode   rewrite  restructure the whole prompt | fix  correct single words only | off
+//   Flow   auto     send it                      | ask  show it, the person picks
+//   Power  eco (haiku) | medium (sonnet) | full (opus)
+//
+// Power picks the judge, and how far back Fix mode reads. Fix reads the conversation through
+// $.session.messages() under a fixed character budget, so what it sends never grows with the
+// chat: a session at 90% of its context window costs Fix exactly what an empty one does.
+//
+// It deliberately does NOT use $.model.fork. Fork would send the session's whole context
+// window — slow, expensive, and growing all session — and is locked to the main thread's
+// model, so no Power tier would be possible. $.model.complete takes any model regardless of
+// what the chat runs on, which is what makes the tiers independent of the conversation.
+import type { Register, EngineInterface, ModelEffort, PromptSubmitInput } from 'claude-code'
 
-type Mode = 'ask' | 'auto' | 'off' | 'fix'
-type Settings = { mode: Mode; minChars: number; model: string }
+type Mode = 'rewrite' | 'fix' | 'off'
+type Flow = 'auto' | 'ask'
+type Power = 'eco' | 'medium' | 'full'
 
-const DEFAULTS: Settings = { mode: 'ask', minChars: 120, model: 'haiku' }
-// What a dictation app can put in front of the text to say "this came from me, power it up":
-// U+2063 (invisible separator, not shown) or the microphone emoji.
+type Settings = {
+  mode: Mode
+  flow: Flow
+  power: Power
+  minChars: number
+  /** Overrides the tier's model: a model name, or 'auto' for whatever the chat runs on. */
+  modelOverride?: string
+}
+
+const DEFAULTS: Settings = { mode: 'rewrite', flow: 'ask', power: 'eco', minChars: 120 }
+
+type Tier = {
+  model: string
+  effort: ModelEffort
+  /** Characters of recent conversation Fix may send. The ceiling, never a target. */
+  chars: number
+  /** How many messages back the term list is gathered from; free, it costs no tokens. */
+  reach: number
+  timeoutMs: number
+}
+
+// `high` on all three tiers, asked for. So the tiers differ by judge and by how much of the
+// conversation Fix reads back — not by how hard the model thinks.
+const POWER: Record<Power, Tier> = {
+  eco: { model: 'haiku', effort: 'high', chars: 2000, reach: 40, timeoutMs: 20000 },
+  medium: { model: 'sonnet', effort: 'high', chars: 6000, reach: 40, timeoutMs: 30000 },
+  full: { model: 'opus', effort: 'high', chars: 12000, reach: 60, timeoutMs: 45000 },
+}
+
+// What a dictation app can put in front of the text: U+2063 (invisible separator) or the
+// microphone emoji. It is stripped so it never reaches the model; it forces nothing.
 const APP_MARKERS = ['⁣', '🎙️', '🎙']
-const USE_NEW = 'ใช้ฉบับ Power Up (Use Power Up)'
+
+const USE_NEW = 'ส่งฉบับนี้ (Send this)'
+const RETRY = 'ตรวจใหม่ (Check again)'
 const KEEP = 'ใช้ข้อความเดิม (Keep original)'
 const EDIT = 'กลับไปแก้ (Back to edit)'
+const MAX_ROUNDS = 3
 
 const SYSTEM = `You turn a person's raw message to an AI coding assistant into a clear, well-structured prompt.
 The message is often dictated speech: fillers, repetitions, self-corrections, ideas out of order, Thai and English mixed.
@@ -38,26 +77,31 @@ Rules:
 - If something important is ambiguous, add a final line asking the assistant to confirm that point first.
 - Output ONLY the rewritten prompt. Do not answer it, do not explain, no preamble, no quotes around it.`
 
-// Fix mode asks for a list of replacements rather than a corrected sentence.
-// Handed a sentence to return, a model sometimes returns a different sentence:
-// "เปิดจริง log ขึ้น" came back once as "เปิด screen lock ไว้". A replacement
-// has to name text that is really in the prompt, so the sentence survives by
-// construction and no wording in the instructions has to be trusted for it.
+// Fix mode asks for a list of replacements rather than a corrected sentence. Handed a sentence
+// to return, a model sometimes returns a different sentence: "เปิดจริง log ขึ้น" came back once
+// as "เปิด screen lock ไว้". A replacement has to name text that is really in the message, so
+// the sentence survives by construction and no wording in the instructions has to be trusted
+// for it.
 const FIX_SYSTEM = `You correct individual wrong words in a person's message to an AI coding assistant.
 The message is dictated speech, Thai and English mixed, so words come out misheard or misspelled.
+
+You are given, in order:
+<terms>   technical words as this conversation spells them. A misheard word is very often one of these.
+<recent>  the last stretch of the conversation, for the topic and who said what.
+<message> the message to correct. ONLY this text is to be corrected.
 
 Fix only these:
 - an English word heard as Thai letters that are not a real Thai word: 'เดพลอย' -> 'deploy', 'คมมิตร' -> 'commit', 'ไอแปร' -> 'iPad'
 - an English word heard as the wrong English word: 'Claude' -> 'cloud', 'Brand' -> 'branch', 'Depth' -> 'dev', 'course' -> 'Claude'
 - a plainly misspelled Thai or English word: 'ตรวจค้ำ' -> 'ตรวจคำ', 'recieve' -> 'receive'
 
-Use the conversation and the project you can see to decide which word was meant.
+Use <terms> and <recent> to decide which word was meant.
 
 Reply with JSON only, no prose, no code fence:
 {"fixes": [{"from": "<exact text in the message>", "to": "<the right word>"}]}
 
 Rules:
-- "from" must appear in the message exactly, character for character.
+- "from" must appear in <message> exactly, character for character. Never a word that is only in <terms> or <recent>.
 - "from" must be ONE word with no spaces inside it. Never a phrase, clause or sentence.
 - Do not rephrase, reorder, shorten, expand, translate or repunctuate anything.
 - A correctly spelled Thai word is not an error, even if an English word exists for it.
@@ -67,9 +111,9 @@ Rules:
 const MAX_FROM = 14
 const MAX_TO = 20
 
-// Applies the model's replacements here rather than taking its sentence back.
-// A fix naming text that is not in the prompt, or spanning more than one word,
-// is dropped: that is the whole protection against a rewrite.
+// Applies the model's replacements here rather than taking its sentence back. A fix naming text
+// that is not in the message, or spanning more than one word, is dropped: that is the whole
+// protection against a rewrite.
 function applyFixes(text: string, reply: string): { out: string; applied: string[] } {
   let parsed: { fixes?: { from?: string; to?: string }[] }
   try {
@@ -90,15 +134,236 @@ function applyFixes(text: string, reply: string): { out: string; applied: string
   return { out, applied }
 }
 
+// A word, a file name, a path, an identifier: polish.py, thai_dictate/vad.py, CFBundleExecutable.
+const TERM = /[A-Za-z][A-Za-z0-9]*(?:[._/-][A-Za-z0-9]+)*/g
+const TERM_CAP = 120
+// Kept out of the list so the budget goes to words worth spelling right.
+const COMMON = new Set([
+  'about', 'after', 'again', 'because', 'before', 'could', 'every', 'first', 'their', 'there',
+  'these', 'thing', 'think', 'those', 'where', 'which', 'while', 'would', 'should', 'something',
+  'anything', 'nothing', 'really', 'other', 'maybe', 'still', 'never', 'always', 'right',
+])
+
+// Worth listing: it carries a separator, an inner capital, a digit, or starts with a capital —
+// otherwise it has to be long enough not to be an ordinary English word.
+function isTerm(t: string): boolean {
+  if (t.length < 3) return false
+  if (/[._/-]/.test(t) || /\d/.test(t) || /[a-z][A-Z]/.test(t)) return true
+  if (/^[A-Z]/.test(t)) return true
+  return t.length >= 5 && !COMMON.has(t.toLowerCase())
+}
+
+/** The conversation Fix reads: a term list gathered wide, and recent prose under a hard cap. */
+async function conversation($: EngineInterface, tier: Tier): Promise<{ terms: string; recent: string }> {
+  let found: unknown
+  try {
+    found = await $.session.messages()
+  } catch {
+    return { terms: '', recent: '' }
+  }
+  if (!Array.isArray(found)) return { terms: '', recent: '' }
+  const msgs = found as { role: string; text?: string }[]
+
+  // Newest first for both passes, so a budget that runs out drops the oldest.
+  const newest = msgs.slice(-tier.reach).reverse()
+
+  const terms: string[] = []
+  const seen = new Set<string>()
+  for (const m of newest) {
+    for (const t of (m.text ?? '').match(TERM) ?? []) {
+      if (!isTerm(t) || seen.has(t)) continue
+      seen.add(t)
+      terms.push(t)
+      if (terms.length >= TERM_CAP) break
+    }
+    if (terms.length >= TERM_CAP) break
+  }
+
+  // Prose: message text only. toolUses and toolResults are left out on purpose — one file read
+  // or grep can be thousands of lines and would eat the whole budget without saying anything
+  // about which word was meant.
+  const kept: string[] = []
+  let used = 0
+  for (const m of newest) {
+    const body = (m.text ?? '').trim()
+    if (!body) continue
+    const line = `${m.role}: ${body}`
+    if (used + line.length > tier.chars) break
+    kept.push(line)
+    used += line.length
+  }
+
+  return { terms: terms.join(' '), recent: kept.reverse().join('\n\n') }
+}
+
+// Settings from before the three dials used `mode` for the flow ('ask' | 'auto') and `model` for
+// the only model there was. Carry those over rather than dropping the person back to the
+// defaults; `model` is read under its new name, so an old 'haiku' no longer pins every tier.
+function withDefaults(saved: unknown): Settings {
+  const old = (saved ?? {}) as Partial<Settings>
+  const s: Settings = { ...DEFAULTS, ...old }
+  // Read the old `mode` loosely: it held the flow back when that was the only dial.
+  const was = (old as { mode?: string }).mode
+  if (was === 'ask' || was === 'auto') {
+    s.mode = 'rewrite'
+    s.flow = was
+  }
+  return s
+}
+
 const clamp = (n: number) => Math.max(20, Math.min(5000, Math.round(n)))
+
+/** The tier's model, unless the person pinned one ('auto' follows the chat's own). */
+async function pickModel($: EngineInterface, s: Settings, tier: Tier): Promise<string> {
+  const pinned = s.modelOverride
+  if (!pinned) return tier.model
+  if (pinned !== 'auto') return pinned
+  try {
+    return (await $.session.model()) || tier.model
+  } catch {
+    return tier.model
+  }
+}
+
+/** What a round produced: the text to send, and the lines that show the person what changed. */
+type Made = { text: string; show: string; changed: boolean }
+
+async function runFix($: EngineInterface, text: string, tier: Tier, model: string): Promise<Made | undefined> {
+  const { terms, recent } = await conversation($, tier)
+  const parts = [
+    terms ? `<terms>\n${terms}\n</terms>` : '',
+    recent ? `<recent>\n${recent}\n</recent>` : '',
+    `<message>\n${text}\n</message>`,
+  ].filter(Boolean)
+
+  let r
+  try {
+    r = await $.model.complete({
+      model,
+      system: FIX_SYSTEM,
+      prompt: parts.join('\n\n'),
+      effort: tier.effort,
+      maxTokens: 1000,
+      timeoutMs: tier.timeoutMs,
+    })
+  } catch {
+    // The engine refused to send it: a model this session may not use, a bad cap.
+    return undefined
+  }
+  if (!r.isAnswered || !r.text.trim()) return undefined
+
+  const { out, applied } = applyFixes(text, r.text)
+  return { text: out, show: applied.join(' · '), changed: applied.length > 0 }
+}
+
+async function runRewrite($: EngineInterface, text: string, tier: Tier, model: string): Promise<Made | undefined> {
+  let r
+  try {
+    r = await $.model.complete({
+      model,
+      system: SYSTEM,
+      prompt: text,
+      effort: tier.effort,
+      maxTokens: 2000,
+      timeoutMs: tier.timeoutMs,
+    })
+  } catch {
+    return undefined
+  }
+  if (!r.isAnswered || !r.text.trim()) return undefined
+  const better = r.text.trim()
+  return { text: better, show: better, changed: better !== text }
+}
+
+/** What the hook does once it has decided: send this text, or drop the prompt back to the box. */
+type Action = { kind: 'send'; text: string; context?: readonly string[] } | { kind: 'drop'; why: string }
+
+async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action> {
+  const s = withDefaults(await $.store.get('settings'))
+  if (s.mode === 'off') return { kind: 'send', text: e.text }
+
+  let text = e.text
+  for (const m of APP_MARKERS) {
+    if (text.startsWith(m)) text = text.slice(m.length).trimStart()
+  }
+  if (!text.trim()) return { kind: 'send', text }
+  // Fix runs at every length: a short prompt holds as many misheard words as a long one.
+  // Rewrite has nothing to do with a prompt already short enough to read.
+  if (s.mode === 'rewrite' && text.length < s.minChars) return { kind: 'send', text }
+
+  const tier = POWER[s.power]
+  const model = await pickModel($, s, tier)
+
+  // Under the ask flow, 'ตรวจใหม่' comes back here for another round.
+  for (let round = 1; ; round++) {
+    let made: Made | undefined
+    $.ui.status(s.mode === 'fix' ? '🔤 กำลังตรวจคำ…' : '⚡ Power Up กำลังเรียบเรียง prompt…')
+    try {
+      made = s.mode === 'fix' ? await runFix($, text, tier, model) : await runRewrite($, text, tier, model)
+    } finally {
+      $.ui.status(undefined)
+    }
+
+    if (made === undefined) {
+      $.ui.toast(
+        s.mode === 'fix'
+          ? 'ตรวจคำไม่ได้ตอนนี้ ส่งข้อความเดิมไป (could not check, sent as is)'
+          : 'Power Up ใช้ไม่ได้ตอนนี้ ส่งข้อความเดิมไป (could not rewrite, sent as is)',
+      )
+      return { kind: 'send', text }
+    }
+
+    // Nothing changed: nothing to show, and nothing worth stopping to confirm.
+    if (!made.changed) {
+      if (s.mode === 'fix') $.ui.log('🔤 ไม่พบคำที่ต้องแก้')
+      return { kind: 'send', text }
+    }
+
+    if (s.flow === 'auto') {
+      $.ui.log(
+        s.mode === 'fix'
+          ? '🔤 แก้คำ: ' + made.show
+          : '⚡ Power Up เรียบเรียง prompt ใหม่ (/power-up ask เพื่อตรวจก่อนส่ง)',
+      )
+      return { kind: 'send', text: made.text }
+    }
+
+    // ask: put it in the transcript (Claude does not read log lines), then let the person pick
+    $.ui.log(
+      s.mode === 'fix'
+        ? '🔤 จะแก้คำเหล่านี้: ' + made.show + '\n\n' + made.text
+        : '⚡ Power Up version:\n\n' + made.show,
+    )
+
+    let pick: string = KEEP
+    const options = round >= MAX_ROUNDS ? [USE_NEW, KEEP, EDIT] : [USE_NEW, RETRY, KEEP, EDIT]
+    try {
+      pick = await $.ui.ask(s.mode === 'fix' ? 'ส่งฉบับที่แก้คำแล้วไหม?' : 'ส่งฉบับ Power Up ไหม?', {
+        options,
+        header: 'Power Up',
+      })
+    } catch {
+      // dismissed, or a -p run with nobody to ask: send what they wrote
+    }
+
+    if (pick === RETRY) continue
+    if (pick === EDIT) {
+      return { kind: 'drop', why: 'กลับไปแก้ได้เลย ฉบับที่ตรวจแล้วอยู่ใน transcript ด้านบน (edit and send again)' }
+    }
+    if (pick === USE_NEW) return { kind: 'send', text: made.text }
+    if (pick === KEEP) return { kind: 'send', text }
+    // typed under "Other": treat it as extra instructions for this prompt
+    return { kind: 'send', text: made.text, context: [...(e.context ?? []), 'Extra note from the user: ' + pick] }
+  }
+}
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     try {
       await $.command.register({
         name: 'power-up',
-        description: 'Prompt Power Up: ask | auto | off | fix | min <chars> | model <name> | status',
-        argumentHint: '[ask|auto|off|fix|min N|model haiku|status]',
+        description: 'Prompt Power Up: rewrite | fix | off · auto | ask · eco | medium | full',
+        argumentHint: '[rewrite|fix|off] [auto|ask] [eco|medium|full] [min N] [model X|auto] [status]',
         immediate: true,
       })
     } catch (err) {
@@ -108,30 +373,49 @@ export const register: Register = on => {
     return next(e)
   })
 
-  const withDefaults = (saved: unknown): Settings => ({ ...DEFAULTS, ...((saved as Partial<Settings> | undefined) ?? {}) })
-
   on('command.run', { command: 'power-up' }, async ($, e) => {
     const s = withDefaults(await $.store.get('settings'))
-    const [word = 'status', value = ''] = e.args.trim().split(/\s+/)
-    const cmd = word.toLowerCase()
-    if (cmd === 'ask' || cmd === 'auto' || cmd === 'off' || cmd === 'fix') {
-      s.mode = cmd
-    } else if (cmd === 'min' && Number(value) > 0) {
-      s.minChars = clamp(Number(value))
-    } else if (cmd === 'model' && value) {
-      s.model = value
-    } else if (cmd !== 'status') {
-      return { text: 'Usage: /power-up ask | auto | off | fix | min <chars> | model <name> | status' }
+    const words = e.args.trim().split(/\s+/).filter(Boolean)
+    let bad = ''
+
+    // Each word sets its own dial, so `/power-up fix medium ask` is one call.
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i] ?? ''
+      const w = word.toLowerCase()
+      const nextWord = words[i + 1]
+      if (w === 'rewrite' || w === 'fix' || w === 'off') s.mode = w
+      else if (w === 'auto' || w === 'ask') s.flow = w
+      else if (w === 'eco' || w === 'medium' || w === 'full') s.power = w
+      else if (w === 'min' && nextWord !== undefined && Number(nextWord) > 0) {
+        s.minChars = clamp(Number(nextWord))
+        i++
+      } else if (w === 'model' && nextWord !== undefined) {
+        s.modelOverride = nextWord
+        i++
+      } else if (w === 'tier' || w === 'status') continue
+      else bad = word
+    }
+    if (bad) {
+      return {
+        text:
+          `ไม่รู้จัก "${bad}" · Usage: /power-up [rewrite|fix|off] [auto|ask] [eco|medium|full] [min N] [model <name>|auto] [status]`,
+      }
     }
     await $.store.set('settings', s)
 
+    const tier = POWER[s.power]
+    const model = s.modelOverride ?? tier.model
+    const where = s.mode === 'fix' ? `อ่านบริบทย้อนหลัง ${tier.chars} ตัวอักษร · ` : ''
     return {
       text:
-        `Prompt Power Up: mode ${s.mode}, prompts of ${s.minChars}+ characters, model ${s.model}. ` +
-        (s.mode === 'fix'
-          ? 'fix แก้เฉพาะคำผิด คงประโยคเดิม ทำงานทุกความยาว (-- เพื่อข้าม). '
-          : 'Start a prompt with ++ to always power it up, -- to skip. ') +
-        `โหมด: ask เรียบเรียงแล้วถาม | auto เรียบเรียงแล้วส่ง | fix แก้เฉพาะคำผิด | off ปิด`,
+        s.mode === 'off'
+          ? 'Prompt Power Up: off · เปิดด้วย /power-up fix หรือ /power-up rewrite'
+          : `Prompt Power Up: ${s.mode} · ${s.flow} · ${s.power} (${model}, effort ${tier.effort}) · ` +
+            where +
+            (s.mode === 'rewrite' ? `ทำงานกับ prompt ตั้งแต่ ${s.minChars} ตัวอักษรขึ้นไป` : 'ทำงานทุกความยาว') +
+            `\nMode: rewrite เรียบเรียงใหม่ทั้งประโยค | fix แก้เฉพาะคำผิด คงประโยคเดิม | off ปิด` +
+            `\nFlow: auto ส่งทันที | ask แสดงให้ตรวจก่อน` +
+            `\nPower: eco haiku | medium sonnet | full opus — model แยกจากแชทหลัก (model auto เพื่อตามแชท)`,
     }
   })
 
@@ -139,87 +423,14 @@ export const register: Register = on => {
     // Only what the person sent themselves; slash commands are left alone
     if (e.command || e.isMeta || (e.origin.kind !== 'composer' && e.origin.kind !== 'bridge')) return next(e)
 
-    const s = withDefaults(await $.store.get('settings'))
-    let text = e.text
-    let forced = false
-
-    if (text.startsWith('--')) return next({ ...e, text: text.slice(2).trimStart() })
-    if (text.startsWith('++')) {
-      text = text.slice(2).trimStart()
-      forced = true
-    }
-    for (const m of APP_MARKERS) {
-      if (text.startsWith(m)) {
-        text = text.slice(m.length).trimStart()
-        forced = true
-      }
-    }
-    if (!text.trim()) return next({ ...e, text })
-
-    // Fix mode: correct words, leave the sentence alone. It runs on every
-    // prompt regardless of minChars — a short one has as many misheard words
-    // as a long one — and sends straight on, because replacing บราน with
-    // branch is not a change worth stopping to confirm.
-    if (s.mode === 'fix' && !(text.startsWith('--'))) {
-      $.ui.status('🔤 กำลังตรวจคำ…')
-      const fr = await $.model.complete({
-        model: s.model,
-        system: FIX_SYSTEM,
-        prompt: text,
-        maxTokens: 1000,
-        timeoutMs: 20000,
-      })
-      $.ui.status(undefined)
-      if (!fr.isAnswered || !fr.text.trim()) {
-        $.ui.toast('ตรวจคำไม่ได้ตอนนี้ ส่งข้อความเดิมไป (could not check, sent as is)')
-        return next({ ...e, text })
-      }
-      const { out, applied } = applyFixes(text, fr.text)
-      if (applied.length) $.ui.log('🔤 แก้คำ: ' + applied.join(' · '))
-      return next({ ...e, text: out })
-    }
-
-    if (!forced && (s.mode === 'off' || text.length < s.minChars)) return next({ ...e, text })
-
-    $.ui.status('⚡ Power Up กำลังเรียบเรียง prompt…')
-    const r = await $.model.complete({
-      model: s.model,
-      system: SYSTEM,
-      prompt: text,
-      maxTokens: 2000,
-      timeoutMs: 30000,
-    })
-    $.ui.status(undefined)
-
-    if (!r.isAnswered || !r.text.trim()) {
-      $.ui.toast('Power Up ใช้ไม่ได้ตอนนี้ ส่งข้อความเดิมไป (could not rewrite, sent as is)')
-      return next({ ...e, text })
-    }
-    const better = r.text.trim()
-
-    if (s.mode === 'auto' && !forced) {
-      $.ui.log('Power Up: rewrote your prompt (/power-up ask to review first)')
-      return next({ ...e, text: better })
-    }
-
-    // Show the new version in the transcript (Claude doesn't read log lines), then let the person pick
-    $.ui.log('⚡ Power Up version:\n\n' + better)
-    let pick = KEEP
+    let action: Action = { kind: 'send', text: e.text }
     try {
-      pick = await $.ui.ask('ส่งฉบับ Power Up ไหม? (Send the Power Up version?)', {
-        options: [USE_NEW, KEEP, EDIT],
-        header: 'Power Up',
-      })
-    } catch {
-      // dismissed, or a -p run with nobody to ask: send what they wrote
+      action = await decide($, e)
+    } catch (err) {
+      // Nothing this mod can fail at is worth holding the person's prompt for.
+      $.ui.log('prompt-power-up: ' + String(err), { to: 'debug' })
     }
-    if (pick === EDIT) return { drop: 'กลับไปแก้ได้เลย ฉบับ Power Up อยู่ใน transcript ด้านบน (edit and send again)' }
-    if (pick === USE_NEW) return next({ ...e, text: better })
-    if (pick !== KEEP) {
-      // typed under "Other": treat it as extra instructions for this prompt
-      return next({ ...e, text: better, context: [...(e.context ?? []), 'Extra note from the user: ' + pick] })
-    }
-
-    return next({ ...e, text })
+    if (action.kind === 'drop') return { drop: action.why }
+    return next(action.context ? { ...e, text: action.text, context: action.context } : { ...e, text: action.text })
   })
 }

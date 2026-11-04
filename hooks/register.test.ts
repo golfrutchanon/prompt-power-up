@@ -105,6 +105,75 @@ test('rewrite + ask shows both before the person picks', async ($, on) => {
   expect(shown).toContain(BETTER)
 })
 
+// The desktop row flattens a log's newlines and draws its markdown as raw characters, so the
+// layout has to come from the rows themselves.
+const SECTIONS = [
+  '**Goal:** ทำ usage bar',
+  '',
+  '**Context:**',
+  '- ตอนนี้ไม่มี progress',
+  '- ใกล้ limit แล้วไม่เตือน',
+  '',
+  '## Requirements',
+  '- เตือนตอนใกล้ limit',
+  '',
+  'Done when: เห็น bar',
+].join('\n')
+
+test('each line of the rewrite is a row of its own, in order, with Goal first', async ($, on) => {
+  const seen = engine(on, { settings: AUTO, reply: () => SECTIONS })
+  await send($, LONG)
+  const from = seen.logs.findIndex(l => l.includes('Prompt ที่เรียบเรียงใหม่'))
+  expect(from).toBeGreaterThan(-1)
+  expect(seen.logs.slice(from + 1)).toEqual([
+    '▸ Goal: ทำ usage bar',
+    '▸ Context:',
+    '• ตอนนี้ไม่มี progress',
+    '• ใกล้ limit แล้วไม่เตือน',
+    '▸ Requirements',
+    '• เตือนตอนใกล้ limit',
+    '▸ Done when: เห็น bar',
+  ])
+})
+
+test('no row carries a newline or a raw ** the desktop would print', async ($, on) => {
+  const seen = engine(on, { settings: AUTO, reply: () => SECTIONS })
+  await send($, LONG)
+  expect(seen.logs.some(l => l.includes('\n') || l.includes('**'))).toBe(false)
+})
+
+test('the original comes first, as typed, with the labels on rows of their own', async ($, on) => {
+  const typed = LONG + '\n\n**ตัวหนาที่พิมพ์เอง** ' + LONG
+  const seen = engine(on, { settings: AUTO, reply: () => SECTIONS })
+  await send($, typed)
+  expect(seen.logs.slice(0, 4)).toEqual(['⚡ Power Up', '📝 ข้อความเดิม:', LONG, '**ตัวหนาที่พิมพ์เอง** ' + LONG])
+})
+
+test('the layout is only for show: Claude still gets the rewrite exactly as written', async ($, on) => {
+  engine(on, { settings: AUTO, reply: () => SECTIONS })
+  expect((await send($, LONG)).text).toBe(SECTIONS)
+})
+
+test('a very long prompt is capped in rows and loses no words', async ($, on) => {
+  const many = Array.from({ length: 500 }, (_, i) => `บรรทัด-${i}`).join('\n')
+  const seen = engine(on, { settings: AUTO, reply: () => many })
+  await send($, LONG)
+  expect(seen.logs.length < 60).toBe(true)
+  const shown = seen.logs.join('\n')
+  expect(shown).toContain('บรรทัด-0')
+  expect(shown).toContain('บรรทัด-499')
+})
+
+test('fix + ask shows the words, then the corrected text line by line', async ($, on) => {
+  const seen = engine(on, {
+    picks: [SEND],
+    settings: { mode: 'fix', flow: 'ask', power: 'eco', minChars: 120 },
+    reply: () => '{"fixes":[{"from":"คมมิต","to":"commit"}]}',
+  })
+  await send($, 'คมมิต ก่อน\nแล้ว push')
+  expect(seen.logs).toEqual(['🔤 จะแก้คำเหล่านี้: คมมิต → commit', 'commit ก่อน', 'แล้ว push'])
+})
+
 test('rewrite that changes nothing says the original went', async ($, on) => {
   const seen = engine(on, { settings: AUTO, reply: () => LONG })
   expect((await send($, LONG)).text).toBe(LONG)

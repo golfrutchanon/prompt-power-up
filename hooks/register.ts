@@ -277,12 +277,53 @@ async function runRewrite($: EngineInterface, text: string, tier: Tier, model: s
   return { text: better, show: better, changed: better !== text }
 }
 
+// A pasted log could be hundreds of lines. Past this the rest shares one row: no words lost.
+const MAX_BLOCK_ROWS = 40
+
+/** A block of text as rows, one per non-empty line. */
+function toRows(text: string): string[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+  if (lines.length <= MAX_BLOCK_ROWS) return lines
+  return [...lines.slice(0, MAX_BLOCK_ROWS - 1), lines.slice(MAX_BLOCK_ROWS - 1).join(' ')]
+}
+
+// The parts SYSTEM asks the model for, when it writes them without bold or a # heading.
+const SECTION = /^(goal|context|requirements?|constraints?|expected output|done when)\b[^:：]*[:：]/i
+
+/**
+ * One line of the rewrite, readable where markdown is not drawn: the log row prints it raw and
+ * dim, so `**` would show as stars and a heading could not stand out by weight.
+ */
+function toPlainRow(line: string): string {
+  const isHeading = /^#{1,6}\s/.test(line) || line.startsWith('**') || SECTION.test(line)
+  const plain = line
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^[-*]\s+/, '• ')
+    .replace(/\*\*/g, '')
+  return isHeading ? `▸ ${plain}` : plain
+}
+
 /**
  * The two parts the person reads in the chat: what they wrote, and what the mod made of it.
  * A log line reaches the transcript and never the model, so showing both costs no tokens.
+ *
+ * Rows, not one string: the desktop draws a log as one dim paragraph, newlines gone. Each log is
+ * a row of its own in logging order, so the layout survives on every surface.
  */
-const bothVersions = (original: string, rewritten: string, heading: string) =>
-  `⚡ Power Up\n\n📝 ข้อความเดิม:\n${original}\n\n✨ ${heading}:\n${rewritten}`
+const bothVersions = (original: string, rewritten: string, heading: string): string[] => [
+  '⚡ Power Up',
+  '📝 ข้อความเดิม:',
+  ...toRows(original),
+  `✨ ${heading}:`,
+  ...toRows(rewritten).map(toPlainRow),
+]
+
+const logRows = ($: EngineInterface, rows: readonly string[]) => {
+  for (const row of rows) $.ui.log(row)
+}
 
 /** What the hook does once it has decided: send this text, or drop the prompt back to the box. */
 type Action = { kind: 'send'; text: string; context?: readonly string[] } | { kind: 'drop'; why: string }
@@ -335,18 +376,20 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
     }
 
     if (s.flow === 'auto') {
-      $.ui.log(
+      logRows(
+        $,
         s.mode === 'fix'
-          ? '🔤 แก้คำ: ' + made.show
+          ? ['🔤 แก้คำ: ' + made.show]
           : bothVersions(text, made.show, 'Prompt ที่เรียบเรียงใหม่ (ส่งฉบับนี้ไปแล้ว)'),
       )
       return { kind: 'send', text: made.text }
     }
 
     // ask: put it in the transcript (Claude does not read log lines), then let the person pick
-    $.ui.log(
+    logRows(
+      $,
       s.mode === 'fix'
-        ? '🔤 จะแก้คำเหล่านี้: ' + made.show + '\n\n' + made.text
+        ? ['🔤 จะแก้คำเหล่านี้: ' + made.show, ...toRows(made.text)]
         : bothVersions(text, made.show, 'Prompt ที่เรียบเรียงใหม่ (รอคุณเลือก)'),
     )
 

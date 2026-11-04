@@ -15,16 +15,16 @@ type Reply = { isAnswered: true; text: string; usage: Record<string, never> }
 const says = (text: string): Reply => ({ isAnswered: true, text, usage: {} })
 
 /** What one run of the engine saw, so a test can assert on the request and not only the answer. */
-type Seen = { models: string[]; efforts: string[]; prompts: string[]; picks: number; logs: string[] }
+type Seen = { models: string[]; efforts: string[]; prompts: string[]; picks: number; logs: string[]; fire: () => void }
 
 // The hooks below stand for the engine: the model answers, the store holds `settings`, the
 // transcript holds `messages`, the prompt enters. $.ui.ask is a tool.call of AskUserQuestion,
 // answered with the labels the test lists, one per round.
 const engine = (
   on: any,
-  opts: { picks?: string[]; settings?: unknown; reply?: (prompt: string) => string; messages?: unknown[] } = {},
+  opts: { picks?: string[]; settings?: unknown; reply?: (prompt: string) => string; messages?: unknown[]; holdTimer?: boolean } = {},
 ): Seen => {
-  const seen: Seen = { models: [], efforts: [], prompts: [], picks: 0, logs: [] }
+  const seen: Seen = { models: [], efforts: [], prompts: [], picks: 0, logs: [], fire: () => {} }
   on('store.get', () => ({ value: opts.settings }))
   on('store.set', () => ({ value: undefined }))
   on('session.messages', () => ({ value: opts.messages ?? [] }))
@@ -46,10 +46,19 @@ const engine = (
     return { value: undefined }
   })
   on('ui.status', () => ({ value: undefined }))
+  on('clock.after', () =>
+    opts.holdTimer
+      ? new Promise(resolve => {
+          seen.fire = () => resolve({ value: undefined })
+        })
+      : { value: undefined },
+  )
   on('ui.toast', () => ({ value: undefined }))
   on('prompt.submit', (_: unknown, e: any) => ({ text: e.text, context: e.context }))
   return seen
 }
+
+declare const h: any
 
 const send = ($: any, text: string) =>
   $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false } as any) as Promise<any>
@@ -90,6 +99,7 @@ const AUTO = { mode: 'rewrite', flow: 'auto', power: 'full', minChars: 120 }
 test('rewrite + auto shows the original and the rewrite, labelled, and sends the rewrite', async ($, on) => {
   const seen = engine(on, { settings: AUTO })
   expect((await send($, LONG)).text).toBe(BETTER)
+  await settle()
   const shown = seen.logs.join('\n')
   expect(shown).toContain('ข้อความเดิม')
   expect(shown).toContain(LONG)
@@ -105,73 +115,80 @@ test('rewrite + ask shows both before the person picks', async ($, on) => {
   expect(shown).toContain(BETTER)
 })
 
-// The desktop row flattens a log's newlines and draws its markdown as raw characters, so the
-// layout has to come from the rows themselves.
-const SECTIONS = [
-  '**Goal:** ทำ usage bar',
-  '',
-  '**Context:**',
-  '- ตอนนี้ไม่มี progress',
-  '- ใกล้ limit แล้วไม่เตือน',
-  '',
-  '## Requirements',
-  '- เตือนตอนใกล้ limit',
-  '',
-  'Done when: เห็น bar',
-].join('\n')
+// The desktop turns a log row's line breaks into spaces, so line breaks need a drawn box.
+const SECTIONS = ['**Goal:** ทำ usage bar', '**Context:** ไม่มี progress', '- ข้อหนึ่ง', '- ข้อสอง', 'Done when: เห็น bar'].join('\n')
 
-test('each line of the rewrite is a row of its own, in order, with Goal first', async ($, on) => {
-  const seen = engine(on, { settings: AUTO, reply: () => SECTIONS })
+const userRow = (text: string, surface: 'desktop' | 'terminal' = 'desktop') =>
+  ({
+    plugin: 'prompt-power-up',
+    component: 'UserMessage',
+    surface,
+    props: { text, origin: { kind: 'composer' }, isExpanded: true },
+  }) as any
+
+const engineRow = (on: any) =>
+  on('ui.render', ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return h(Text, null, 'engine row')
+  })
+
+const settle = () => new Promise(resolve => setTimeout(resolve, 20))
+
+test('the row draws exactly two blocks, each one Markdown with its line breaks', async ($, on) => {
+  engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
+  engineRow(on)
   await send($, LONG)
-  const from = seen.logs.findIndex(l => l.includes('Prompt ที่เรียบเรียงใหม่'))
-  expect(from).toBeGreaterThan(-1)
-  expect(seen.logs.slice(from + 1)).toEqual([
-    '▸ Goal: ทำ usage bar',
-    '▸ Context:',
-    '• ตอนนี้ไม่มี progress',
-    '• ใกล้ limit แล้วไม่เตือน',
-    '▸ Requirements',
-    '• เตือนตอนใกล้ limit',
-    '▸ Done when: เห็น bar',
-  ])
+  const ui = await $.ui.mount(userRow(SECTIONS))
+  const blocks = await ui.findAll({ type: 'Markdown' })
+  expect(blocks.length).toBe(2)
+  expect(blocks[0].text).toContain('ข้อความเดิม')
+  expect(blocks[0].text).toContain(LONG)
+  expect(blocks[1].text).toContain('Prompt ที่เรียบเรียงใหม่')
+  expect(blocks[1].text).toContain('**Goal:** ทำ usage bar\n\n**Context:** ไม่มี progress')
+  expect(blocks[1].text).toContain('- ข้อหนึ่ง\n- ข้อสอง')
+  await ui.unmount()
 })
 
-test('no row carries a newline or a raw ** the desktop would print', async ($, on) => {
-  const seen = engine(on, { settings: AUTO, reply: () => SECTIONS })
+test('drawn boxes mean no log rows at all', async ($, on) => {
+  const seen = engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
+  engineRow(on)
   await send($, LONG)
+  const ui = await $.ui.mount(userRow(LONG))
+  await ui.find({ type: 'Markdown' })
+  seen.fire()
+  await settle()
+  expect(seen.logs).toEqual([])
+  await ui.unmount()
+})
+
+test('with nothing drawn the two blocks come as exactly two log rows', async ($, on) => {
+  const seen = engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
+  await send($, LONG + '\nบรรทัดสอง')
+  seen.fire()
+  await settle()
+  expect(seen.logs.length).toBe(2)
+  expect(seen.logs[0]).toContain('ข้อความเดิม')
+  expect(seen.logs[1]).toContain('▸ Goal: ทำ usage bar')
   expect(seen.logs.some(l => l.includes('\n') || l.includes('**'))).toBe(false)
 })
 
-test('the original comes first, as typed, with the labels on rows of their own', async ($, on) => {
-  const typed = LONG + '\n\n**ตัวหนาที่พิมพ์เอง** ' + LONG
-  const seen = engine(on, { settings: AUTO, reply: () => SECTIONS })
-  await send($, typed)
-  expect(seen.logs.slice(0, 4)).toEqual(['⚡ Power Up', '📝 ข้อความเดิม:', LONG, '**ตัวหนาที่พิมพ์เอง** ' + LONG])
+test('rewrite + ask shows exactly two log rows before the person picks', async ($, on) => {
+  const seen = engine(on, { picks: [SEND], settings: { ...AUTO, flow: 'ask' }, reply: () => SECTIONS })
+  await send($, LONG)
+  expect(seen.logs.length).toBe(2)
 })
 
-test('the layout is only for show: Claude still gets the rewrite exactly as written', async ($, on) => {
-  engine(on, { settings: AUTO, reply: () => SECTIONS })
+test('the blocks are only for show: Claude gets the rewrite exactly as written', async ($, on) => {
+  engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
   expect((await send($, LONG)).text).toBe(SECTIONS)
 })
 
-test('a very long prompt is capped in rows and loses no words', async ($, on) => {
-  const many = Array.from({ length: 500 }, (_, i) => `บรรทัด-${i}`).join('\n')
-  const seen = engine(on, { settings: AUTO, reply: () => many })
-  await send($, LONG)
-  expect(seen.logs.length < 60).toBe(true)
-  const shown = seen.logs.join('\n')
-  expect(shown).toContain('บรรทัด-0')
-  expect(shown).toContain('บรรทัด-499')
-})
-
-test('fix + ask shows the words, then the corrected text line by line', async ($, on) => {
-  const seen = engine(on, {
-    picks: [SEND],
-    settings: { mode: 'fix', flow: 'ask', power: 'eco', minChars: 120 },
-    reply: () => '{"fixes":[{"from":"คมมิต","to":"commit"}]}',
-  })
-  await send($, 'คมมิต ก่อน\nแล้ว push')
-  expect(seen.logs).toEqual(['🔤 จะแก้คำเหล่านี้: คมมิต → commit', 'commit ก่อน', 'แล้ว push'])
+test('a row the mod did not rewrite is left to the engine', async ($, on) => {
+  engine(on, { settings: AUTO })
+  engineRow(on)
+  const ui = await $.ui.mount(userRow('ข้อความอื่นที่ไม่เกี่ยว'))
+  expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('rewrite that changes nothing says the original went', async ($, on) => {

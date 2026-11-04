@@ -131,35 +131,37 @@ const userRow = (text: string, surface: 'desktop' | 'terminal' = 'desktop') =>
 const engineRow = (on: any) =>
   on('ui.render', ($: any, e: any) => {
     const { Text } = $.ui.resolve(e)
-    return h(Text, null, 'engine row')
+    return h(Text, null, 'row: ' + (e.props?.text ?? ''))
   })
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 20))
 
-test('sent while idle: the bubble has the typed words, so one block holds the rewrite', async ($, on) => {
-  engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
-  engineRow(on)
-  await send($, LONG)
-  const ui = await $.ui.mount(userRow(LONG))
-  const blocks = await ui.findAll({ type: 'Markdown' })
-  expect(blocks.length).toBe(1)
-  expect(blocks[0].text).toContain('Prompt ที่เรียบเรียงใหม่')
-  expect(blocks[0].text).toContain('**Goal:** ทำ usage bar\n\n**Context:** ไม่มี progress')
-  expect(blocks[0].text).toContain('- ข้อหนึ่ง\n- ข้อสอง')
-  expect(blocks[0].text.includes(LONG)).toBe(false)
-  await ui.unmount()
-})
-
-test('sent into a running turn: the bubble has the rewrite, so one block holds the original', async ($, on) => {
-  engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
-  engineRow(on)
-  await send($, LONG, 'turn-1')
-  const ui = await $.ui.mount(userRow(SECTIONS))
+const expectRowThenOriginal = async (ui: any) => {
+  const row = await ui.find({ type: 'Text', text: /^row: / })
+  expect(row.text).toContain('**Goal:** ทำ usage bar')
+  expect(row.text.includes(LONG)).toBe(false)
   const blocks = await ui.findAll({ type: 'Markdown' })
   expect(blocks.length).toBe(1)
   expect(blocks[0].text).toContain('ข้อความเดิม')
   expect(blocks[0].text).toContain(LONG)
   expect(blocks[0].text.includes('Goal')).toBe(false)
+}
+
+test('sent while idle: the row shows the rewrite and one block holds the original', async ($, on) => {
+  engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
+  engineRow(on)
+  await send($, LONG)
+  const ui = await $.ui.mount(userRow(LONG))
+  await expectRowThenOriginal(ui)
+  await ui.unmount()
+})
+
+test('sent into a running turn: the same two things in the same order', async ($, on) => {
+  engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
+  engineRow(on)
+  await send($, LONG, 'turn-1')
+  const ui = await $.ui.mount(userRow(SECTIONS))
+  await expectRowThenOriginal(ui)
   await ui.unmount()
 })
 

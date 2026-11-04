@@ -287,9 +287,11 @@ type Shown = {
   rewritten: string
   heading: string
   isDrawn: boolean
+  /** The text as sent, which the person's own row shows: what Claude really reads. */
+  sent: string
   /**
-   * What the app's own bubble holds, so the mod shows only the other one. Sent while idle it keeps
-   * the typed words; delivered into a running turn it holds the rewrite (seen on the desktop).
+   * What the app's bubble holds if nothing is drawn through this mod. Sent while idle it keeps the
+   * typed words; delivered into a running turn it holds the rewrite (seen on the desktop).
    */
   bubbleHasRewrite: boolean
 }
@@ -302,11 +304,8 @@ const forDisplay = (text: string) => text.replace(/<\/?pasted_content\b[^>]*>/g,
 
 const LABEL = 'prompt-power-up'
 
-/** The one block the bubble does not already hold. */
-const blockOf = (entry: Shown) =>
-  entry.bubbleHasRewrite
-    ? `**${ORIGINAL_HEADING}**\n\n${withLineBreaks(entry.original)}`
-    : `**✨ ${entry.heading}**\n\n${withLineBreaks(entry.rewritten)}`
+/** The block under the row. The row itself holds the rewrite, so only the original is left. */
+const blockOf = (entry: Shown) => `**${ORIGINAL_HEADING}**\n\n${withLineBreaks(entry.original)}`
 
 // What the user row's text can be, to the blocks that go under it. The row may hold the words as
 // typed or the rewrite that was stored, so both find it. Module state: a reload forgets it, and
@@ -419,6 +418,7 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
         rewritten: forDisplay(made.show),
         heading: 'Prompt ที่เรียบเรียงใหม่ (ส่งฉบับนี้ไปแล้ว)',
         isDrawn: false,
+        sent: made.text,
         bubbleHasRewrite: e.turnId !== undefined,
       }
       remember([e.text, text, made.text], entry)
@@ -435,6 +435,7 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
         rewritten: forDisplay(made.show),
         heading: 'Prompt ที่เรียบเรียงใหม่ (รอคุณเลือก)',
         isDrawn: true,
+        sent: made.text,
         bubbleHasRewrite: false,
       }
       $.ui.log(originalRow(entry))
@@ -532,7 +533,9 @@ export const register: Register = on => {
     entry.isDrawn = true
 
     const { Box, Markdown, Text } = $.ui.resolve(e)
-    const row = await next(e)
+    // The app shows the typed words when sent while idle and the rewrite when delivered mid-turn.
+    // Name the text here so the row reads the same both ways: what was really sent.
+    const row = await next({ ...e, props: { ...e.props, text: entry.sent } })
     // Dim and labelled like a log row, so it reads as the mod's and not as Claude's reply.
     return (
       <Box flexDirection="column" gap={1}>

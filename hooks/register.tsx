@@ -290,19 +290,7 @@ const ORIGINAL_HEADING = '⚡ Power Up · 📝 ข้อความเดิม
 // person never typed them. Only what is shown loses them: the sent text stays as it was.
 const forDisplay = (text: string) => text.replace(/<\/?pasted_content\b[^>]*>/g, '').trim()
 
-const PANE_ID = 'power-up'
-// The latest two blocks, for the pane. A log row cannot hold a line break; a pane can.
-let latest: Shown | undefined
-let isPaneAsked = false
-
-// Temporary: what this surface really draws for a mod, read back from the store while the display
-// is being worked out. The desktop drew no UserMessage box under 0.2.4 and nothing else says why.
-const drawnHere = new Set<string>()
-function noteDrawn($: EngineInterface, name: string) {
-  if (drawnHere.has(name)) return
-  drawnHere.add(name)
-  void $.store.set('diag', [...drawnHere]).catch(() => undefined)
-}
+const LABEL = 'prompt-power-up'
 
 const blocksOf = (entry: Shown) => [
   `**${ORIGINAL_HEADING}**\n\n${withLineBreaks(entry.original)}`,
@@ -529,31 +517,24 @@ export const register: Register = on => {
     }
   })
 
-  on('ui.render', async ($, e, next) => {
-    noteDrawn($, `${e.surface}:${e.component}`)
-    const { Box, Markdown } = $.ui.resolve(e)
-
-    if (e.component === 'Pane' && e.requestId === PANE_ID) {
-      if (!latest) return next(e)
-      return (
-        <Box flexDirection="column" gap={1}>
-          {blocksOf(latest).map((text, i) => (
-            <Markdown key={String(i)} text={text} />
-          ))}
-        </Box>
-      )
-    }
-
-    if (e.component !== 'UserMessage') return next(e)
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const entry = shown.get(e.props.text.trim())
     if (!entry) return next(e)
     entry.isDrawn = true
+
+    const { Box, Markdown, Text } = $.ui.resolve(e)
     const row = await next(e)
+    // Dim and labelled like a log row, so it reads as the mod's and not as Claude's reply.
     return (
       <Box flexDirection="column" gap={1}>
         {row}
         {blocksOf(entry).map((text, i) => (
-          <Markdown key={String(i)} text={text} />
+          <Box key={String(i)} flexDirection="row" gap={2}>
+            <Text dimColor>{LABEL}</Text>
+            <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+              <Markdown text={text} dimColor />
+            </Box>
+          </Box>
         ))}
       </Box>
     )
@@ -573,16 +554,9 @@ export const register: Register = on => {
     if (action.kind === 'drop') return { drop: action.why }
     const { show } = action
     if (show) {
-      latest = show
-      void $.ui.invalidate('ui.render')
-      if (!isPaneAsked) {
-        isPaneAsked = true
-        // Once a session: a pane the person closed stays closed.
-        $.ui
-          .open({ id: PANE_ID, title: 'Power Up' })
-          .then(opened => noteDrawn($, `pane-open:${opened.isPlaced}:${opened.reason ?? ''}`))
-          .catch(err => noteDrawn($, `pane-open:error:${String(err).slice(0, 120)}`))
-      }
+      // The row may already be drawn from the typed text, before this entry existed, and a repaint
+      // reuses that answer. 0.2.4 left this out and never showed its boxes.
+      $.ui.invalidate('ui.render')
       // No surface has to draw the row through this mod. Rather than lose the words, say them in
       // the two log rows if nothing drew the boxes by then.
       $.clock.after(BOX_WAIT_MS, () => {

@@ -15,7 +15,7 @@ type Reply = { isAnswered: true; text: string; usage: Record<string, never> }
 const says = (text: string): Reply => ({ isAnswered: true, text, usage: {} })
 
 /** What one run of the engine saw, so a test can assert on the request and not only the answer. */
-type Seen = { models: string[]; efforts: string[]; prompts: string[]; picks: number; logs: string[]; fire: () => void; opens: number }
+type Seen = { models: string[]; efforts: string[]; prompts: string[]; picks: number; logs: string[]; fire: () => void; invalidates: number }
 
 // The hooks below stand for the engine: the model answers, the store holds `settings`, the
 // transcript holds `messages`, the prompt enters. $.ui.ask is a tool.call of AskUserQuestion,
@@ -24,7 +24,7 @@ const engine = (
   on: any,
   opts: { picks?: string[]; settings?: unknown; reply?: (prompt: string) => string; messages?: unknown[]; holdTimer?: boolean } = {},
 ): Seen => {
-  const seen: Seen = { models: [], efforts: [], prompts: [], picks: 0, logs: [], fire: () => {}, opens: 0 }
+  const seen: Seen = { models: [], efforts: [], prompts: [], picks: 0, logs: [], fire: () => {}, invalidates: 0 }
   on('store.get', () => ({ value: opts.settings }))
   on('store.set', () => ({ value: undefined }))
   on('session.messages', () => ({ value: opts.messages ?? [] }))
@@ -46,11 +46,10 @@ const engine = (
     return { value: undefined }
   })
   on('ui.status', () => ({ value: undefined }))
-  on('ui.open', () => {
-    seen.opens++
-    return { value: { isPlaced: true } }
+  on('ui.invalidate', () => {
+    seen.invalidates++
+    return { value: undefined }
   })
-  on('ui.invalidate', () => ({ value: undefined }))
   on('clock.after', () =>
     opts.holdTimer
       ? new Promise(resolve => {
@@ -207,23 +206,21 @@ test('the paste wrapper never shows, and still goes to Claude as it was', async 
   expect(seen.logs[0]).toContain(LONG)
 })
 
-test('the pane holds the same two blocks and opens once a session', async ($, on) => {
+test('a rewrite asks for a redraw, since the row may already be drawn from the typed text', async ($, on) => {
   const seen = engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
+  await send($, LONG)
+  expect(seen.invalidates).toBe(1)
+})
+
+test('each block is dim and labelled with the mod, so it cannot read as the reply', async ($, on) => {
+  engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
   engineRow(on)
   await send($, LONG)
-  await send($, LONG + ' อีกรอบ')
-  await settle()
-  expect(seen.opens <= 1).toBe(true)
-  const ui = await $.ui.mount({
-    plugin: 'prompt-power-up',
-    component: 'Pane',
-    requestId: 'power-up',
-    surface: 'desktop',
-    props: { title: 'Power Up', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} },
-  } as any)
+  const ui = await $.ui.mount(userRow(SECTIONS))
+  const labels = await ui.findAll({ type: 'Text', text: /^prompt-power-up$/ })
+  expect(labels.length).toBe(2)
   const blocks = await ui.findAll({ type: 'Markdown' })
-  expect(blocks.length).toBe(2)
-  expect(blocks[1].text).toContain('**Goal:** ทำ usage bar\n\n**Context:** ไม่มี progress')
+  expect(blocks.every((b: any) => b.props?.dimColor === true || b.dimColor === true)).toBe(true)
   await ui.unmount()
 })
 

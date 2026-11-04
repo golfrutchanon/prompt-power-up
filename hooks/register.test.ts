@@ -15,7 +15,7 @@ type Reply = { isAnswered: true; text: string; usage: Record<string, never> }
 const says = (text: string): Reply => ({ isAnswered: true, text, usage: {} })
 
 /** What one run of the engine saw, so a test can assert on the request and not only the answer. */
-type Seen = { models: string[]; efforts: string[]; prompts: string[]; picks: number; logs: string[]; fire: () => void }
+type Seen = { models: string[]; efforts: string[]; prompts: string[]; picks: number; logs: string[]; fire: () => void; opens: number }
 
 // The hooks below stand for the engine: the model answers, the store holds `settings`, the
 // transcript holds `messages`, the prompt enters. $.ui.ask is a tool.call of AskUserQuestion,
@@ -24,7 +24,7 @@ const engine = (
   on: any,
   opts: { picks?: string[]; settings?: unknown; reply?: (prompt: string) => string; messages?: unknown[]; holdTimer?: boolean } = {},
 ): Seen => {
-  const seen: Seen = { models: [], efforts: [], prompts: [], picks: 0, logs: [], fire: () => {} }
+  const seen: Seen = { models: [], efforts: [], prompts: [], picks: 0, logs: [], fire: () => {}, opens: 0 }
   on('store.get', () => ({ value: opts.settings }))
   on('store.set', () => ({ value: undefined }))
   on('session.messages', () => ({ value: opts.messages ?? [] }))
@@ -46,6 +46,11 @@ const engine = (
     return { value: undefined }
   })
   on('ui.status', () => ({ value: undefined }))
+  on('ui.open', () => {
+    seen.opens++
+    return { value: { isPlaced: true } }
+  })
+  on('ui.invalidate', () => ({ value: undefined }))
   on('clock.after', () =>
     opts.holdTimer
       ? new Promise(resolve => {
@@ -188,6 +193,37 @@ test('a row the mod did not rewrite is left to the engine', async ($, on) => {
   engineRow(on)
   const ui = await $.ui.mount(userRow('ข้อความอื่นที่ไม่เกี่ยว'))
   expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the paste wrapper never shows, and still goes to Claude as it was', async ($, on) => {
+  const pasted = '<pasted_content id="026c">\n' + LONG + '\n</pasted_content id="026c">'
+  const seen = engine(on, { settings: AUTO, reply: () => pasted + ' เพิ่ม', holdTimer: true })
+  const sent = await send($, pasted)
+  expect(sent.text).toBe(pasted + ' เพิ่ม')
+  seen.fire()
+  await settle()
+  expect(seen.logs.join(' ').includes('pasted_content')).toBe(false)
+  expect(seen.logs[0]).toContain(LONG)
+})
+
+test('the pane holds the same two blocks and opens once a session', async ($, on) => {
+  const seen = engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
+  engineRow(on)
+  await send($, LONG)
+  await send($, LONG + ' อีกรอบ')
+  await settle()
+  expect(seen.opens <= 1).toBe(true)
+  const ui = await $.ui.mount({
+    plugin: 'prompt-power-up',
+    component: 'Pane',
+    requestId: 'power-up',
+    surface: 'desktop',
+    props: { title: 'Power Up', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  } as any)
+  const blocks = await ui.findAll({ type: 'Markdown' })
+  expect(blocks.length).toBe(2)
+  expect(blocks[1].text).toContain('**Goal:** ทำ usage bar\n\n**Context:** ไม่มี progress')
   await ui.unmount()
 })
 

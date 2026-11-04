@@ -286,6 +286,29 @@ type Shown = { original: string; rewritten: string; heading: string; isDrawn: bo
 
 const ORIGINAL_HEADING = '⚡ Power Up · 📝 ข้อความเดิม'
 
+// The app wraps pasted text in these tags on the way to the engine. They are for the model; the
+// person never typed them. Only what is shown loses them: the sent text stays as it was.
+const forDisplay = (text: string) => text.replace(/<\/?pasted_content\b[^>]*>/g, '').trim()
+
+const PANE_ID = 'power-up'
+// The latest two blocks, for the pane. A log row cannot hold a line break; a pane can.
+let latest: Shown | undefined
+let isPaneAsked = false
+
+// Temporary: what this surface really draws for a mod, read back from the store while the display
+// is being worked out. The desktop drew no UserMessage box under 0.2.4 and nothing else says why.
+const drawnHere = new Set<string>()
+function noteDrawn($: EngineInterface, name: string) {
+  if (drawnHere.has(name)) return
+  drawnHere.add(name)
+  void $.store.set('diag', [...drawnHere]).catch(() => undefined)
+}
+
+const blocksOf = (entry: Shown) => [
+  `**${ORIGINAL_HEADING}**\n\n${withLineBreaks(entry.original)}`,
+  `**✨ ${entry.heading}**\n\n${withLineBreaks(entry.rewritten)}`,
+]
+
 // What the user row's text can be, to the blocks that go under it. The row may hold the words as
 // typed or the rewrite that was stored, so both find it. Module state: a reload forgets it, and
 // the row then draws as the engine draws it, nothing lost.
@@ -400,8 +423,8 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
         return { kind: 'send', text: made.text }
       }
       const entry = {
-        original: text,
-        rewritten: made.show,
+        original: forDisplay(text),
+        rewritten: forDisplay(made.show),
         heading: 'Prompt ที่เรียบเรียงใหม่ (ส่งฉบับนี้ไปแล้ว)',
         isDrawn: false,
       }
@@ -411,11 +434,11 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
 
     // ask: put it in the transcript (Claude does not read log lines), then let the person pick
     if (s.mode === 'fix') {
-      $.ui.log('🔤 จะแก้คำเหล่านี้: ' + made.show + '\n\n' + made.text)
+      $.ui.log('🔤 จะแก้คำเหล่านี้: ' + made.show + '\n\n' + forDisplay(made.text))
     } else {
       logTwoRows($, {
-        original: text,
-        rewritten: made.show,
+        original: forDisplay(text),
+        rewritten: forDisplay(made.show),
         heading: 'Prompt ที่เรียบเรียงใหม่ (รอคุณเลือก)',
         isDrawn: true,
       })
@@ -506,18 +529,32 @@ export const register: Register = on => {
     }
   })
 
-  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+  on('ui.render', async ($, e, next) => {
+    noteDrawn($, `${e.surface}:${e.component}`)
+    const { Box, Markdown } = $.ui.resolve(e)
+
+    if (e.component === 'Pane' && e.requestId === PANE_ID) {
+      if (!latest) return next(e)
+      return (
+        <Box flexDirection="column" gap={1}>
+          {blocksOf(latest).map((text, i) => (
+            <Markdown key={String(i)} text={text} />
+          ))}
+        </Box>
+      )
+    }
+
+    if (e.component !== 'UserMessage') return next(e)
     const entry = shown.get(e.props.text.trim())
     if (!entry) return next(e)
     entry.isDrawn = true
-
-    const { Box, Markdown } = $.ui.resolve(e)
     const row = await next(e)
     return (
       <Box flexDirection="column" gap={1}>
         {row}
-        <Markdown text={`**${ORIGINAL_HEADING}**\n\n${withLineBreaks(entry.original)}`} />
-        <Markdown text={`**✨ ${entry.heading}**\n\n${withLineBreaks(entry.rewritten)}`} />
+        {blocksOf(entry).map((text, i) => (
+          <Markdown key={String(i)} text={text} />
+        ))}
       </Box>
     )
   })
@@ -536,6 +573,16 @@ export const register: Register = on => {
     if (action.kind === 'drop') return { drop: action.why }
     const { show } = action
     if (show) {
+      latest = show
+      void $.ui.invalidate('ui.render')
+      if (!isPaneAsked) {
+        isPaneAsked = true
+        // Once a session: a pane the person closed stays closed.
+        $.ui
+          .open({ id: PANE_ID, title: 'Power Up' })
+          .then(opened => noteDrawn($, `pane-open:${opened.isPlaced}:${opened.reason ?? ''}`))
+          .catch(err => noteDrawn($, `pane-open:error:${String(err).slice(0, 120)}`))
+      }
       // No surface has to draw the row through this mod. Rather than lose the words, say them in
       // the two log rows if nothing drew the boxes by then.
       $.clock.after(BOX_WAIT_MS, () => {

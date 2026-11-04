@@ -64,8 +64,8 @@ const engine = (
 
 declare const h: any
 
-const send = ($: any, text: string) =>
-  $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false } as any) as Promise<any>
+const send = ($: any, text: string, turnId?: string) =>
+  $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false, ...(turnId && { turnId }) } as any) as Promise<any>
 
 // ---- Mode: rewrite -------------------------------------------------------------------------
 
@@ -100,13 +100,11 @@ test('rewrite + auto sends without asking', async ($, on) => {
 
 const AUTO = { mode: 'rewrite', flow: 'auto', power: 'full', minChars: 120 }
 
-test('rewrite + auto shows the original and the rewrite, labelled, and sends the rewrite', async ($, on) => {
+test('rewrite + auto with nothing drawn shows the rewrite in a row and sends the rewrite', async ($, on) => {
   const seen = engine(on, { settings: AUTO })
   expect((await send($, LONG)).text).toBe(BETTER)
   await settle()
   const shown = seen.logs.join('\n')
-  expect(shown).toContain('ข้อความเดิม')
-  expect(shown).toContain(LONG)
   expect(shown).toContain('Prompt ที่เรียบเรียงใหม่')
   expect(shown).toContain(BETTER)
 })
@@ -138,22 +136,34 @@ const engineRow = (on: any) =>
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 20))
 
-test('the row draws exactly two blocks, each one Markdown with its line breaks', async ($, on) => {
+test('sent while idle: the bubble has the typed words, so one block holds the rewrite', async ($, on) => {
   engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
   engineRow(on)
   await send($, LONG)
-  const ui = await $.ui.mount(userRow(SECTIONS))
+  const ui = await $.ui.mount(userRow(LONG))
   const blocks = await ui.findAll({ type: 'Markdown' })
-  expect(blocks.length).toBe(2)
-  expect(blocks[0].text).toContain('ข้อความเดิม')
-  expect(blocks[0].text).toContain(LONG)
-  expect(blocks[1].text).toContain('Prompt ที่เรียบเรียงใหม่')
-  expect(blocks[1].text).toContain('**Goal:** ทำ usage bar\n\n**Context:** ไม่มี progress')
-  expect(blocks[1].text).toContain('- ข้อหนึ่ง\n- ข้อสอง')
+  expect(blocks.length).toBe(1)
+  expect(blocks[0].text).toContain('Prompt ที่เรียบเรียงใหม่')
+  expect(blocks[0].text).toContain('**Goal:** ทำ usage bar\n\n**Context:** ไม่มี progress')
+  expect(blocks[0].text).toContain('- ข้อหนึ่ง\n- ข้อสอง')
+  expect(blocks[0].text.includes(LONG)).toBe(false)
   await ui.unmount()
 })
 
-test('drawn boxes mean no log rows at all', async ($, on) => {
+test('sent into a running turn: the bubble has the rewrite, so one block holds the original', async ($, on) => {
+  engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
+  engineRow(on)
+  await send($, LONG, 'turn-1')
+  const ui = await $.ui.mount(userRow(SECTIONS))
+  const blocks = await ui.findAll({ type: 'Markdown' })
+  expect(blocks.length).toBe(1)
+  expect(blocks[0].text).toContain('ข้อความเดิม')
+  expect(blocks[0].text).toContain(LONG)
+  expect(blocks[0].text.includes('Goal')).toBe(false)
+  await ui.unmount()
+})
+
+test('a drawn block means no log rows at all', async ($, on) => {
   const seen = engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
   engineRow(on)
   await send($, LONG)
@@ -165,14 +175,13 @@ test('drawn boxes mean no log rows at all', async ($, on) => {
   await ui.unmount()
 })
 
-test('with nothing drawn the two blocks come as exactly two log rows', async ($, on) => {
+test('with nothing drawn the same one block comes as one log row', async ($, on) => {
   const seen = engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
   await send($, LONG + '\nบรรทัดสอง')
   seen.fire()
   await settle()
-  expect(seen.logs.length).toBe(2)
-  expect(seen.logs[0]).toContain('ข้อความเดิม')
-  expect(seen.logs[1]).toContain('▸ Goal: ทำ usage bar')
+  expect(seen.logs.length).toBe(1)
+  expect(seen.logs[0]).toContain('▸ Goal: ทำ usage bar')
   expect(seen.logs.some(l => l.includes('\n') || l.includes('**'))).toBe(false)
 })
 
@@ -198,7 +207,7 @@ test('a row the mod did not rewrite is left to the engine', async ($, on) => {
 test('the paste wrapper never shows, and still goes to Claude as it was', async ($, on) => {
   const pasted = '<pasted_content id="026c">\n' + LONG + '\n</pasted_content id="026c">'
   const seen = engine(on, { settings: AUTO, reply: () => pasted + ' เพิ่ม', holdTimer: true })
-  const sent = await send($, pasted)
+  const sent = await send($, pasted, 'turn-1')
   expect(sent.text).toBe(pasted + ' เพิ่ม')
   seen.fire()
   await settle()
@@ -212,13 +221,13 @@ test('a rewrite asks for a redraw, since the row may already be drawn from the t
   expect(seen.invalidates).toBe(1)
 })
 
-test('each block is dim and labelled with the mod, so it cannot read as the reply', async ($, on) => {
+test('the block is dim and labelled with the mod, so it cannot read as the reply', async ($, on) => {
   engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
   engineRow(on)
   await send($, LONG)
   const ui = await $.ui.mount(userRow(SECTIONS))
   const labels = await ui.findAll({ type: 'Text', text: /^prompt-power-up$/ })
-  expect(labels.length).toBe(2)
+  expect(labels.length).toBe(1)
   const blocks = await ui.findAll({ type: 'Markdown' })
   expect(blocks.every((b: any) => b.props?.dimColor === true || b.dimColor === true)).toBe(true)
   await ui.unmount()

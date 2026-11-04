@@ -282,7 +282,17 @@ async function runRewrite($: EngineInterface, text: string, tier: Tier, model: s
  * The two blocks the person reads in the chat: what they wrote, and what the mod made of it.
  * Neither reaches the model, so showing them costs no tokens.
  */
-type Shown = { original: string; rewritten: string; heading: string; isDrawn: boolean }
+type Shown = {
+  original: string
+  rewritten: string
+  heading: string
+  isDrawn: boolean
+  /**
+   * What the app's own bubble holds, so the mod shows only the other one. Sent while idle it keeps
+   * the typed words; delivered into a running turn it holds the rewrite (seen on the desktop).
+   */
+  bubbleHasRewrite: boolean
+}
 
 const ORIGINAL_HEADING = '⚡ Power Up · 📝 ข้อความเดิม'
 
@@ -292,10 +302,11 @@ const forDisplay = (text: string) => text.replace(/<\/?pasted_content\b[^>]*>/g,
 
 const LABEL = 'prompt-power-up'
 
-const blocksOf = (entry: Shown) => [
-  `**${ORIGINAL_HEADING}**\n\n${withLineBreaks(entry.original)}`,
-  `**✨ ${entry.heading}**\n\n${withLineBreaks(entry.rewritten)}`,
-]
+/** The one block the bubble does not already hold. */
+const blockOf = (entry: Shown) =>
+  entry.bubbleHasRewrite
+    ? `**${ORIGINAL_HEADING}**\n\n${withLineBreaks(entry.original)}`
+    : `**✨ ${entry.heading}**\n\n${withLineBreaks(entry.rewritten)}`
 
 // What the user row's text can be, to the blocks that go under it. The row may hold the words as
 // typed or the rewrite that was stored, so both find it. Module state: a reload forgets it, and
@@ -343,15 +354,8 @@ const toParts = (text: string) =>
     .map(line => line.trim())
     .filter(Boolean)
 
-/**
- * The same two blocks as two log rows, for where no box was drawn and for the ask flow, which has
- * to show them before anything is sent. The desktop turns every line break in a log row into a
- * space, so each row reads as one paragraph: never one row per line, which is what cluttered 0.2.3.
- */
-function logTwoRows($: EngineInterface, entry: Shown) {
-  $.ui.log(`${ORIGINAL_HEADING}: ${toParts(entry.original).join(' ')}`)
-  $.ui.log(`✨ ${entry.heading}: ${toParts(entry.rewritten).map(toPlainPart).join('  ')}`)
-}
+const originalRow = (entry: Shown) => `${ORIGINAL_HEADING}: ${toParts(entry.original).join(' ')}`
+const rewrittenRow = (entry: Shown) => `✨ ${entry.heading}: ${toParts(entry.rewritten).map(toPlainPart).join('  ')}`
 
 /** What the hook does once it has decided: send this text, or drop the prompt back to the box. */
 type Action =
@@ -415,6 +419,7 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
         rewritten: forDisplay(made.show),
         heading: 'Prompt ที่เรียบเรียงใหม่ (ส่งฉบับนี้ไปแล้ว)',
         isDrawn: false,
+        bubbleHasRewrite: e.turnId !== undefined,
       }
       remember([e.text, text, made.text], entry)
       return { kind: 'send', text: made.text, show: entry }
@@ -424,12 +429,16 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
     if (s.mode === 'fix') {
       $.ui.log('🔤 จะแก้คำเหล่านี้: ' + made.show + '\n\n' + forDisplay(made.text))
     } else {
-      logTwoRows($, {
+      // Nothing is sent yet, so there is no bubble to lean on: the person needs both to choose.
+      const entry = {
         original: forDisplay(text),
         rewritten: forDisplay(made.show),
         heading: 'Prompt ที่เรียบเรียงใหม่ (รอคุณเลือก)',
         isDrawn: true,
-      })
+        bubbleHasRewrite: false,
+      }
+      $.ui.log(originalRow(entry))
+      $.ui.log(rewrittenRow(entry))
     }
 
     let pick: string = KEEP
@@ -528,14 +537,12 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" gap={1}>
         {row}
-        {blocksOf(entry).map((text, i) => (
-          <Box key={String(i)} flexDirection="row" gap={2}>
-            <Text dimColor>{LABEL}</Text>
-            <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-              <Markdown text={text} dimColor />
-            </Box>
+        <Box flexDirection="row" gap={2}>
+          <Text dimColor>{LABEL}</Text>
+          <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+            <Markdown text={blockOf(entry)} dimColor />
           </Box>
-        ))}
+        </Box>
       </Box>
     )
   })
@@ -557,10 +564,10 @@ export const register: Register = on => {
       // The row may already be drawn from the typed text, before this entry existed, and a repaint
       // reuses that answer. 0.2.4 left this out and never showed its boxes.
       $.ui.invalidate('ui.render')
-      // No surface has to draw the row through this mod. Rather than lose the words, say them in
-      // the two log rows if nothing drew the boxes by then.
+      // No surface has to draw the row through this mod. Rather than lose the words, say them in a
+      // log row if nothing drew the block by then.
       $.clock.after(BOX_WAIT_MS, () => {
-        if (!show.isDrawn) logTwoRows($, show)
+        if (!show.isDrawn) $.ui.log(show.bubbleHasRewrite ? originalRow(show) : rewrittenRow(show))
       })
     }
     return next(action.context ? { ...e, text: action.text, context: action.context } : { ...e, text: action.text })

@@ -277,6 +277,13 @@ async function runRewrite($: EngineInterface, text: string, tier: Tier, model: s
   return { text: better, show: better, changed: better !== text }
 }
 
+/**
+ * The two parts the person reads in the chat: what they wrote, and what the mod made of it.
+ * A log line reaches the transcript and never the model, so showing both costs no tokens.
+ */
+const bothVersions = (original: string, rewritten: string, heading: string) =>
+  `⚡ Power Up\n\n📝 ข้อความเดิม:\n${original}\n\n✨ ${heading}:\n${rewritten}`
+
 /** What the hook does once it has decided: send this text, or drop the prompt back to the box. */
 type Action = { kind: 'send'; text: string; context?: readonly string[] } | { kind: 'drop'; why: string }
 
@@ -312,12 +319,18 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
           ? 'ตรวจคำไม่ได้ตอนนี้ ส่งข้อความเดิมไป (could not check, sent as is)'
           : 'Power Up ใช้ไม่ได้ตอนนี้ ส่งข้อความเดิมไป (could not rewrite, sent as is)',
       )
+      // A toast fades. This line stays, so the person can always tell which text went.
+      $.ui.log(
+        s.mode === 'fix'
+          ? '⚠️ ตรวจคำไม่สำเร็จ ส่งข้อความเดิมไป'
+          : '⚠️ Power Up เรียบเรียงไม่สำเร็จ ส่งข้อความเดิมไป',
+      )
       return { kind: 'send', text }
     }
 
     // Nothing changed: nothing to show, and nothing worth stopping to confirm.
     if (!made.changed) {
-      if (s.mode === 'fix') $.ui.log('🔤 ไม่พบคำที่ต้องแก้')
+      $.ui.log(s.mode === 'fix' ? '🔤 ไม่พบคำที่ต้องแก้' : '⚡ Power Up ไม่ได้แก้อะไร ส่งข้อความเดิมไป')
       return { kind: 'send', text }
     }
 
@@ -325,7 +338,7 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
       $.ui.log(
         s.mode === 'fix'
           ? '🔤 แก้คำ: ' + made.show
-          : '⚡ Power Up เรียบเรียง prompt ใหม่ (/power-up ask เพื่อตรวจก่อนส่ง)',
+          : bothVersions(text, made.show, 'Prompt ที่เรียบเรียงใหม่ (ส่งฉบับนี้ไปแล้ว)'),
       )
       return { kind: 'send', text: made.text }
     }
@@ -334,7 +347,7 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
     $.ui.log(
       s.mode === 'fix'
         ? '🔤 จะแก้คำเหล่านี้: ' + made.show + '\n\n' + made.text
-        : '⚡ Power Up version:\n\n' + made.show,
+        : bothVersions(text, made.show, 'Prompt ที่เรียบเรียงใหม่ (รอคุณเลือก)'),
     )
 
     let pick: string = KEEP

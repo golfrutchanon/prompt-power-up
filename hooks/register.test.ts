@@ -15,7 +15,7 @@ type Reply = { isAnswered: true; text: string; usage: Record<string, never> }
 const says = (text: string): Reply => ({ isAnswered: true, text, usage: {} })
 
 /** What one run of the engine saw, so a test can assert on the request and not only the answer. */
-type Seen = { models: string[]; efforts: string[]; prompts: string[]; picks: number }
+type Seen = { models: string[]; efforts: string[]; prompts: string[]; picks: number; logs: string[] }
 
 // The hooks below stand for the engine: the model answers, the store holds `settings`, the
 // transcript holds `messages`, the prompt enters. $.ui.ask is a tool.call of AskUserQuestion,
@@ -24,7 +24,7 @@ const engine = (
   on: any,
   opts: { picks?: string[]; settings?: unknown; reply?: (prompt: string) => string; messages?: unknown[] } = {},
 ): Seen => {
-  const seen: Seen = { models: [], efforts: [], prompts: [], picks: 0 }
+  const seen: Seen = { models: [], efforts: [], prompts: [], picks: 0, logs: [] }
   on('store.get', () => ({ value: opts.settings }))
   on('store.set', () => ({ value: undefined }))
   on('session.messages', () => ({ value: opts.messages ?? [] }))
@@ -41,7 +41,10 @@ const engine = (
     seen.picks++
     return { result: { questions: e.questions, answers: { [e.questions[0].question]: pick } } }
   })
-  on('ui.log', () => ({ value: undefined }))
+  on('ui.log', (_: unknown, e: any) => {
+    seen.logs.push(e.text)
+    return { value: undefined }
+  })
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('prompt.submit', (_: unknown, e: any) => ({ text: e.text, context: e.context }))
@@ -78,6 +81,40 @@ test('rewrite + auto sends without asking', async ($, on) => {
   const seen = engine(on, { settings: { mode: 'rewrite', flow: 'auto', power: 'eco', minChars: 120 } })
   expect((await send($, LONG)).text).toBe(BETTER)
   expect(seen.picks).toBe(0)
+})
+
+// ---- What the person sees ------------------------------------------------------------------
+
+const AUTO = { mode: 'rewrite', flow: 'auto', power: 'full', minChars: 120 }
+
+test('rewrite + auto shows the original and the rewrite, labelled, and sends the rewrite', async ($, on) => {
+  const seen = engine(on, { settings: AUTO })
+  expect((await send($, LONG)).text).toBe(BETTER)
+  const shown = seen.logs.join('\n')
+  expect(shown).toContain('ข้อความเดิม')
+  expect(shown).toContain(LONG)
+  expect(shown).toContain('Prompt ที่เรียบเรียงใหม่')
+  expect(shown).toContain(BETTER)
+})
+
+test('rewrite + ask shows both before the person picks', async ($, on) => {
+  const seen = engine(on, { picks: [SEND], settings: { ...AUTO, flow: 'ask' } })
+  await send($, LONG)
+  const shown = seen.logs.join('\n')
+  expect(shown).toContain(LONG)
+  expect(shown).toContain(BETTER)
+})
+
+test('rewrite that changes nothing says the original went', async ($, on) => {
+  const seen = engine(on, { settings: AUTO, reply: () => LONG })
+  expect((await send($, LONG)).text).toBe(LONG)
+  expect(seen.logs.join('\n')).toContain('ส่งข้อความเดิม')
+})
+
+test('a rewrite that fails says the original went, in a line that stays', async ($, on) => {
+  const seen = engine(on, { settings: AUTO, reply: () => '   ' })
+  expect((await send($, LONG)).text).toBe(LONG)
+  expect(seen.logs.join('\n')).toContain('ส่งข้อความเดิม')
 })
 
 test('rewrite leaves a prompt shorter than minChars alone', async ($, on) => {

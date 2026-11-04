@@ -27,8 +27,8 @@ mod ไม่ได้รับประโยคใหม่กลับมา�
 
 | Flow | ผล |
 |---|---|
-| `auto` | ทำแล้วส่งทันที (ถ้าไม่มีอะไรต้องแก้ ก็ส่งของเดิมเฉยๆ) |
-| `ask` | แสดงฉบับใหม่ใน transcript แล้วให้เลือก **ส่งฉบับนี้ / ตรวจใหม่ / ใช้ข้อความเดิม / กลับไปแก้** |
+| `auto` | ทำแล้วส่งทันที และแสดงทั้งข้อความเดิมกับ prompt ที่เรียบเรียงใหม่ในแชท (ไม่มีอะไรต้องแก้ หรือเรียบเรียงไม่สำเร็จ ก็บอกว่าส่งข้อความเดิมไป) |
+| `ask` | แสดงทั้งข้อความเดิมกับฉบับใหม่ใน transcript แล้วให้เลือก **ส่งฉบับนี้ / ตรวจใหม่ / ใช้ข้อความเดิม / กลับไปแก้** |
 
 `ตรวจใหม่` สั่งให้ลองอีกรอบ ได้ถึง 3 รอบ
 
@@ -108,7 +108,7 @@ organised as Goal / Context / Requirements / Expected output, in the language yo
 Runs on prompts of 120+ characters (`/power-up min N`).
 
 ### Flow
-`auto` sends it · `ask` shows it and offers **Send this / Check again / Keep original / Back to edit**
+`auto` sends it and shows your original beside the rewrite · `ask` shows both and offers **Send this / Check again / Keep original / Back to edit**
 (Check again retries, up to 3 rounds).
 
 ### Power

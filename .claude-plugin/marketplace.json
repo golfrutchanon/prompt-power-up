@@ -8,6 +8,15 @@
       "name": "prompt-power-up",
       "source": "./",
       "description": "Corrects the words you mis-dictated using the conversation's own context, or rewrites a rambling prompt, before Claude reads it. Three dials: mode, flow, power. Thai + English."
+    },
+    {
+      "name": "git-graph",
+      "source": {
+        "source": "github",
+        "repo": "golfrutchanon/git-graph",
+        "ref": "main"
+      },
+      "description": "A read-only Git graph pane: pick branches, see which one leads which."
     }
   ],
   "description": "Mods by Copvang for Claude Code."

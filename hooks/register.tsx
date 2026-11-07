@@ -410,6 +410,8 @@ type Shown = {
   original: string
   rewritten: string
   heading: string
+  /** What Fix changed, named word by word. Empty for a rewrite, whose changes are the whole text. */
+  changes: string
   isDrawn: boolean
   /** The text as sent, which the person's own row shows: what Claude really reads. */
   sent: string
@@ -428,8 +430,13 @@ const forDisplay = (text: string) => text.replace(/<\/?pasted_content\b[^>]*>/g,
 
 const LABEL = 'prompt-power-up'
 
-/** The block under the row. The row itself holds the rewrite, so only the original is left. */
-const blockOf = (entry: Shown) => `**${ORIGINAL_HEADING}**\n\n${withLineBreaks(entry.original)}`
+const changesLine = (entry: Shown) => `🔤 แก้คำ: ${entry.changes}`
+
+/** The block under the row. The row itself holds what was sent, so what changed and the original are left. */
+const blockOf = (entry: Shown) => {
+  const original = `**${ORIGINAL_HEADING}**\n\n${withLineBreaks(entry.original)}`
+  return entry.changes ? `**${changesLine(entry)}**\n\n${original}` : original
+}
 
 // What the user row's text can be, to the blocks that go under it. The row may hold the words as
 // typed or the rewrite that was stored, so both find it. Module state: a reload forgets it, and
@@ -479,6 +486,31 @@ const toParts = (text: string) =>
 
 const originalRow = (entry: Shown) => `${ORIGINAL_HEADING}: ${toParts(entry.original).join(' ')}`
 const rewrittenRow = (entry: Shown) => `✨ ${entry.heading}: ${toParts(entry.rewritten).map(toPlainPart).join('  ')}`
+
+/** The block in one log row, for a surface that drew nothing: only the version the bubble lacks. */
+const fallbackRow = (entry: Shown) => {
+  const row = entry.bubbleHasRewrite ? originalRow(entry) : rewrittenRow(entry)
+  return entry.changes ? `${changesLine(entry)} · ${row}` : row
+}
+
+/**
+ * Readies the user row for the text about to be sent. `isLogged` means the ask flow already put
+ * both versions in the transcript, so a surface that draws nothing needs no log row on top.
+ */
+function showSent(e: PromptSubmitInput, text: string, made: Made, isFix: boolean, isLogged: boolean): Shown {
+  const entry: Shown = {
+    original: forDisplay(text),
+    rewritten: forDisplay(made.text),
+    heading: isFix ? 'ข้อความที่แก้แล้ว (ส่งฉบับนี้ไปแล้ว)' : 'Prompt ที่เรียบเรียงใหม่ (ส่งฉบับนี้ไปแล้ว)',
+    changes: isFix ? made.show : '',
+    isDrawn: isLogged,
+    sent: made.text,
+    bubbleHasRewrite: e.turnId !== undefined,
+  }
+  // The row may carry the app's paste wrapper or not, so it is found either way.
+  remember([e.text, text, made.text, entry.original, entry.rewritten], entry)
+  return entry
+}
 
 /** What the hook does once it has decided: send this text, or drop the prompt back to the box. */
 type Action =
@@ -532,21 +564,9 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
       return { kind: 'send', text }
     }
 
+    const isFix = s.mode === 'fix'
     if (s.flow === 'auto') {
-      if (s.mode === 'fix') {
-        $.ui.log('🔤 แก้คำ: ' + made.show)
-        return { kind: 'send', text: made.text }
-      }
-      const entry = {
-        original: forDisplay(text),
-        rewritten: forDisplay(made.show),
-        heading: 'Prompt ที่เรียบเรียงใหม่ (ส่งฉบับนี้ไปแล้ว)',
-        isDrawn: false,
-        sent: made.text,
-        bubbleHasRewrite: e.turnId !== undefined,
-      }
-      remember([e.text, text, made.text], entry)
-      return { kind: 'send', text: made.text, show: entry }
+      return { kind: 'send', text: made.text, show: showSent(e, text, made, isFix, false) }
     }
 
     // ask: put it in the transcript (Claude does not read log lines), then let the person pick
@@ -558,6 +578,7 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
         original: forDisplay(text),
         rewritten: forDisplay(made.show),
         heading: 'Prompt ที่เรียบเรียงใหม่ (รอคุณเลือก)',
+        changes: '',
         isDrawn: true,
         sent: made.text,
         bubbleHasRewrite: false,
@@ -581,10 +602,11 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
     if (pick === EDIT) {
       return { kind: 'drop', why: 'กลับไปแก้ได้เลย ฉบับที่ตรวจแล้วอยู่ใน transcript ด้านบน (edit and send again)' }
     }
-    if (pick === USE_NEW) return { kind: 'send', text: made.text }
     if (pick === KEEP) return { kind: 'send', text }
+    const show = showSent(e, text, made, isFix, true)
+    if (pick === USE_NEW) return { kind: 'send', text: made.text, show }
     // typed under "Other": treat it as extra instructions for this prompt
-    return { kind: 'send', text: made.text, context: [...(e.context ?? []), 'Extra note from the user: ' + pick] }
+    return { kind: 'send', text: made.text, show, context: [...(e.context ?? []), 'Extra note from the user: ' + pick] }
   }
 }
 
@@ -660,7 +682,8 @@ export const register: Register = on => {
     const { Box, Markdown, Text } = $.ui.resolve(e)
     // The app shows the typed words when sent while idle and the rewrite when delivered mid-turn.
     // Name the text here so the row reads the same both ways: what was really sent.
-    const row = await next({ ...e, props: { ...e.props, text: entry.sent } })
+    // Without the paste wrapper: Fix keeps it for Claude, and the person never typed it.
+    const row = await next({ ...e, props: { ...e.props, text: forDisplay(entry.sent) } })
     // Dim and labelled like a log row, so it reads as the mod's and not as Claude's reply.
     return (
       <Box flexDirection="column" gap={1}>
@@ -695,7 +718,7 @@ export const register: Register = on => {
       // No surface has to draw the row through this mod. Rather than lose the words, say them in a
       // log row if nothing drew the block by then.
       $.clock.after(BOX_WAIT_MS, () => {
-        if (!show.isDrawn) $.ui.log(show.bubbleHasRewrite ? originalRow(show) : rewrittenRow(show))
+        if (!show.isDrawn) $.ui.log(fallbackRow(show))
       })
     }
     return next(action.context ? { ...e, text: action.text, context: action.context } : { ...e, text: action.text })

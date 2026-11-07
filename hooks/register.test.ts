@@ -472,7 +472,108 @@ test('a message of nothing but filler is sent as typed', async ($, on) => {
 test('the log names what was cut and how many times', async ($, on) => {
   const seen = engine(on, { settings: FIX_ON, reply: cuts('[เอ่อ ]ทำ', 'ทำ [เอ่อ ]log', 'log [อืม ]ใหม่', '[เอ่อ ]ทำ') })
   await send($, 'เอ่อ ทำ เอ่อ log อืม ใหม่')
+  await settle()
   expect(seen.logs.join('\n')).toContain('ตัด เอ่อ ×2 · อืม')
+})
+
+// ---- Mode: fix, what the person sees -------------------------------------------------------
+
+const DICTATED = 'โดเมนเอ่อ โดเมน Praam.ai เนี่ยจดเลยดีไหม'
+const CLEANED = 'โดเมน Praam.ai จดเลยดีไหม'
+const cleans = cuts('โดเมน[เอ่อ โดเมน ]Praam', 'ai [เนี่ย]จด')
+
+const expectCleanedThenBlock = async (ui: any) => {
+  const row = await ui.find({ type: 'Text', text: /^row: / })
+  expect(row.text).toBe('row: ' + CLEANED)
+  const blocks = await ui.findAll({ type: 'Markdown' })
+  expect(blocks.length).toBe(1)
+  expect(blocks[0].text).toContain('ตัด เอ่อ โดเมน · เนี่ย')
+  expect(blocks[0].text).toContain('ข้อความเดิม')
+  expect(blocks[0].text).toContain(DICTATED)
+}
+
+test('fix + auto, sent while idle: the row holds the cleaned text, the block what changed and the original', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cleans, holdTimer: true })
+  engineRow(on)
+  expect((await send($, DICTATED)).text).toBe(CLEANED)
+  const ui = await $.ui.mount(userRow(DICTATED))
+  await expectCleanedThenBlock(ui)
+  await ui.unmount()
+})
+
+test('fix + auto, sent into a running turn: the same row and block', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cleans, holdTimer: true })
+  engineRow(on)
+  await send($, DICTATED, 'turn-1')
+  const ui = await $.ui.mount(userRow(CLEANED))
+  await expectCleanedThenBlock(ui)
+  await ui.unmount()
+})
+
+test('fix + auto with the block drawn adds no log row', async ($, on) => {
+  const seen = engine(on, { settings: FIX_ON, reply: cleans, holdTimer: true })
+  engineRow(on)
+  await send($, DICTATED)
+  const ui = await $.ui.mount(userRow(DICTATED))
+  await ui.find({ type: 'Markdown' })
+  seen.fire()
+  await settle()
+  expect(seen.logs).toEqual([])
+  await ui.unmount()
+})
+
+test('fix + auto with nothing drawn says what changed and the cleaned text in one log row', async ($, on) => {
+  const seen = engine(on, { settings: FIX_ON, reply: cleans, holdTimer: true })
+  await send($, DICTATED)
+  seen.fire()
+  await settle()
+  expect(seen.logs.length).toBe(1)
+  expect(seen.logs[0]).toContain('ตัด เอ่อ โดเมน · เนี่ย')
+  expect(seen.logs[0]).toContain(CLEANED)
+})
+
+test('fix keeps the paste wrapper for Claude and shows it nowhere, whichever text the row holds', async ($, on) => {
+  const pasted = '<pasted_content id="026c">\n' + DICTATED + '\n</pasted_content id="026c">'
+  engine(on, { settings: FIX_ON, reply: cleans, holdTimer: true })
+  engineRow(on)
+  expect((await send($, pasted)).text).toBe('<pasted_content id="026c">\n' + CLEANED + '\n</pasted_content id="026c">')
+  const ui = await $.ui.mount(userRow(DICTATED))
+  await expectCleanedThenBlock(ui)
+  expect((await ui.find({ type: 'Markdown' })).text.includes('pasted_content')).toBe(false)
+  await ui.unmount()
+})
+
+test('fix + ask, picking the fixed text: the row holds it too, with no extra log row', async ($, on) => {
+  const seen = engine(on, { picks: [SEND], settings: { ...FIX_ON, flow: 'ask' }, reply: cleans, holdTimer: true })
+  engineRow(on)
+  const logged = () => seen.logs.length
+  expect((await send($, DICTATED)).text).toBe(CLEANED)
+  const before = logged()
+  const ui = await $.ui.mount(userRow(DICTATED))
+  await expectCleanedThenBlock(ui)
+  seen.fire()
+  await settle()
+  expect(logged()).toBe(before)
+  await ui.unmount()
+})
+
+test('fix + ask, keeping the original: the row stays as typed, with no block', async ($, on) => {
+  engine(on, { picks: [KEEP], settings: { ...FIX_ON, flow: 'ask' }, reply: cleans, holdTimer: true })
+  engineRow(on)
+  expect((await send($, DICTATED)).text).toBe(DICTATED)
+  const ui = await $.ui.mount(userRow(DICTATED))
+  expect((await ui.find({ type: 'Text', text: /^row: / })).text).toBe('row: ' + DICTATED)
+  expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('rewrite + ask, picking the rewrite: the row holds the rewrite and the block the original', async ($, on) => {
+  engine(on, { picks: [SEND], settings: { ...AUTO, flow: 'ask' }, reply: () => SECTIONS, holdTimer: true })
+  engineRow(on)
+  await send($, LONG)
+  const ui = await $.ui.mount(userRow(LONG))
+  await expectRowThenOriginal(ui)
+  await ui.unmount()
 })
 
 // ---- The command ---------------------------------------------------------------------------

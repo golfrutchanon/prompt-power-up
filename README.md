@@ -9,14 +9,17 @@
 
 ### สองโหมด เลือกอย่างใดอย่างหนึ่ง
 
-**Mode `fix` — แก้เฉพาะคำผิด ประโยคเดิมอยู่ครบ**
+**Mode `fix` — แก้คำผิดและตัดคำฟุ่มเฟือย ประโยคเดิมอยู่ครบ**
 เวลาพูดสั่ง AI คำอังกฤษมักออกมาเป็นไทยที่ไม่ใช่คำ (`เดพลอย` → `deploy`) หรือกลายเป็นคำอังกฤษผิดตัว
-(`course` → `Claude`, `บราน` → `branch`) โหมดนี้แก้แค่คำพวกนั้น **ไม่เรียบเรียงประโยคใหม่** — พูด 5 คำได้ 5 คำ
+(`course` → `Claude`, `บราน` → `branch`) และมีคำติดปากแทรก (`เอ่อ` `อืม` `อ่า` `แบบว่า` `อะไรงี้`)
+โหมดนี้แก้คำพวกนั้นและตัดคำติดปากออก แต่**ไม่เรียบเรียงประโยคใหม่** คำอื่นอยู่ครบ เรียงเหมือนเดิม
 
-mod ไม่ได้รับประโยคใหม่กลับมาจากโมเดล มันขอ**รายการคำแทน** `{from, to}` แล้วแทนให้เองในเครื่อง
-คำที่ไม่มีอยู่จริงในข้อความ หรือกินเกินหนึ่งคำ จะถูกทิ้ง ประโยคของคุณจึงรอดโดยโครงสร้าง ไม่ใช่โดยการขอร้องโมเดล
+mod ไม่ได้รับประโยคใหม่กลับมาจากโมเดล มันขอ**รายการคำแทน** `{from, to}` กับ**รายการจุดที่ตัด** แล้วทำให้เองในเครื่อง
+คำที่ไม่มีอยู่จริงในข้อความจะถูกทิ้ง จุดที่ตัดเอาคำออกได้อย่างเดียว เติมคำไม่ได้ และห้ามตัดคำปฏิเสธ (`ไม่` `อย่า` `ห้าม` `not`) ตัวเลข path หรือโค้ดใน backtick
+ถ้าตัดคำจริงเกิน 40% ของข้อความ จะถือว่าโมเดลกำลังเรียบเรียงใหม่ และทิ้งการตัดทั้งหมด
 
 โหมดนี้อ่านบทสนทนาที่ผ่านมาด้วย เพื่อรู้ว่าศัพท์ในวงสนทนาสะกดว่าอะไร — ทำงานได้ทุกความยาว
+ข้อความยาวที่มีคำติดปากเยอะจะรอนานขึ้น (`eco` ราว 15–25 วินาที)
 
 **Mode `rewrite` — เรียบเรียงใหม่ทั้งประโยค**
 ตัดคำเติม (เอ่อ, แบบว่า, อะไรงี้) และคำซ้ำ เก็บเฉพาะสิ่งที่ตั้งใจจริง (พูดแก้ตัวเองก็เก็บอันสุดท้าย)
@@ -41,7 +44,7 @@ mod ไม่ได้รับประโยคใหม่กลับมา�
 | `full` | Opus | high | 12,000 ตัวอักษร · ย้อน 60 ข้อความ |
 
 **โมเดลของ mod แยกจากโมเดลที่คุณคุยแชทอยู่** คุยด้วย Opus แล้วให้ตรวจคำด้วย Haiku ได้ ไม่ต้องตรงกัน
-(ถ้าอยากให้ตามแชท สั่ง `/power-up model auto`)
+(ถ้าอยากให้ตามแชท สั่ง `/pp-up model auto`)
 
 ทั้งสามระดับใช้ `effort: high` เหมือนกัน — ต่างกันที่คนตัดสิน ไม่ใช่ที่ความพยายาม
 
@@ -64,18 +67,18 @@ mod ทำงานกับ "ข้อความในช่องแชท�
 
 ### คำสั่ง
 ```
-/power-up status              ดูการตั้งค่า
-/power-up fix                 เปิดโหมดแก้คำผิด
-/power-up rewrite             เปิดโหมดเรียบเรียงใหม่
-/power-up off                 ปิด
-/power-up auto                ส่งทันที
-/power-up ask                 แสดงให้ตรวจก่อนส่ง
-/power-up eco | mid | full    เลือกความฉลาด
-/power-up min 200             ความยาวขั้นต่ำของโหมด rewrite
-/power-up model sonnet        กำหนดโมเดลเอง (auto = ตามแชทหลัก)
+/pp-up status                 ดูการตั้งค่า
+/pp-up fix                    เปิดโหมดแก้คำผิด
+/pp-up re                     เปิดโหมดเรียบเรียงใหม่
+/pp-up off                    ปิด
+/pp-up auto                   ส่งทันที
+/pp-up ask                    แสดงให้ตรวจก่อนส่ง
+/pp-up eco | mid | full       เลือกความฉลาด
+/pp-up min 200                ความยาวขั้นต่ำของโหมด rewrite
+/pp-up model sonnet           กำหนดโมเดลเอง (auto = ตามแชทหลัก)
 ```
 
-ตั้งพร้อมกันได้ในคำสั่งเดียว: `/power-up fix mid ask`
+ตั้งพร้อมกันได้ในคำสั่งเดียว: `/pp-up fix mid ask`
 
 ### ค่าใช้จ่ายและความเป็นส่วนตัว
 - ใช้บัญชี Claude ที่ login ใน Claude Code อยู่แล้ว ไม่ต้องมี API key แยก ไม่ส่งข้อมูลไปบริการอื่น
@@ -93,19 +96,21 @@ mod จะตัดอักขระนั้นออกให้ก่อน�
 
 ### Two modes, pick one
 
-**`fix` — corrects single words, leaves the sentence alone.** Dictated English comes out as Thai letters
-that are not a word (`เดพลอย` → `deploy`) or as the wrong English word (`course` → `Claude`, `Brand` → `branch`).
-This mode fixes those and nothing else: say five words, get five words.
+**`fix` — corrects words and cuts filler, leaves the sentence alone.** Dictated English comes out as Thai letters
+that are not a word (`เดพลอย` → `deploy`) or as the wrong English word (`course` → `Claude`, `Brand` → `branch`),
+with hesitations in between (`เอ่อ`, `อืม`, `um`, `you know`). This mode fixes those and cuts the fillers. It does not rephrase.
 
-It never takes a sentence back from the model. It asks for a list of `{from, to}` replacements and applies them
-itself; a replacement naming text that is not in your message, or spanning more than one word, is dropped. Your
-sentence survives by construction, not because the instructions asked nicely.
+It never takes a sentence back from the model. It asks for a list of `{from, to}` replacements and a list of cuts and
+applies them itself. An edit naming text that is not in your message is dropped, and a cut can only take text away. A cut
+may not name a negation (`ไม่`, `อย่า`, `ห้าม`, `not`), a number, a path or code in backticks, and past 40% of the message
+in real words all the cuts are dropped as a rewrite.
 
 It reads the conversation so far to know how the terms in play are spelled, and runs at every prompt length.
+A long, filler-heavy message takes longer (about 15–25 s on `eco`).
 
 **`rewrite` — restructures the whole prompt.** Fillers and repeats removed, only your final intent kept,
 organised as Goal / Context / Requirements / Expected output, in the language you used, with nothing added.
-Runs on prompts of 120+ characters (`/power-up min N`).
+Runs on prompts of 120+ characters (`/pp-up min N`).
 
 ### Flow
 `auto` sends it and shows your original beside the rewrite · `ask` shows both and offers **Send this / Check again / Keep original / Back to edit**
@@ -120,7 +125,7 @@ Runs on prompts of 120+ characters (`/power-up min N`).
 | `full` | Opus | high | 12,000 chars · 60 messages |
 
 **The mod's model is independent of the model your chat runs on** — chat on Opus, check words with Haiku.
-`/power-up model auto` follows the chat instead. All three tiers use `effort: high`: the tiers differ by judge.
+`/pp-up model auto` follows the chat instead. All three tiers use `effort: high`: the tiers differ by judge.
 
 ### The context it sends never grows with the chat
 `fix` builds its own context from a term list (file names, paths, identifiers, English words — extracted locally,
@@ -135,9 +140,9 @@ left alone.
 
 ### Commands
 ```
-/power-up status | fix | rewrite | off | auto | ask | eco | mid | full | min <chars> | model <name>|auto
+/pp-up status | fix | re | off | auto | ask | eco | mid | full | min <chars> | model <name>|auto
 ```
-Several at once: `/power-up fix mid ask`
+Several at once: `/pp-up fix mid ask`
 
 ### Cost and privacy
 Uses your existing Claude Code login (no API key, no third-party service); each check counts toward your plan or
@@ -176,12 +181,12 @@ claude plugin update prompt-power-up
 แล้ว **restart Claude Code หรือ `/reload-plugins`** · ถ้าไม่โหลดใหม่ จะยังรันตัวเก่าโดยไม่มีอะไรฟ้อง
 และคำสั่งที่เพิ่งเพิ่มเข้าไปจะขึ้นว่าใช้ไม่ได้ ทั้งที่โค้ดถูกแล้ว
 
-เช็กว่าโหลดตัวใหม่แล้วจริงด้วย `/power-up status` — ถ้ายังเห็นข้อความแบบเก่า คือยังไม่โหลด
+เช็กว่าโหลดตัวใหม่แล้วจริงด้วย `/pp-up status` — ถ้ายังเห็นข้อความแบบเก่า คือยังไม่โหลด
 
 *What a session runs is the installed copy, pinned to a **version**, not a commit: pushing code
 without raising the version changes nothing on a machine that already installed it. After
 updating, restart Claude Code or run `/reload-plugins` — without that it keeps running the old
-build silently, and a newly added command looks broken though the code is right. `/power-up
+build silently, and a newly added command looks broken though the code is right. `/pp-up
 status` tells you which build you are on.*
 
 License: MIT

@@ -1,7 +1,7 @@
 {
   "name": "prompt-power-up",
-  "version": "0.2.8",
-  "description": "Corrects the words you mis-dictated using the conversation's own context, or rewrites a rambling prompt, before Claude reads it. Three dials: mode, flow, power. Thai + English.",
+  "version": "0.3.0",
+  "description": "Corrects the words you mis-dictated using the conversation's own context and cuts filler words, or rewrites a rambling prompt, before Claude reads it. Three dials: mode, flow, power. Thai + English.",
   "author": {
     "name": "Copvang"
   },

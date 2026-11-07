@@ -364,6 +364,140 @@ test('fix holds the recent text to the tier budget, however long the chat is', a
   expect(recent.length < 2600).toBe(true)
 })
 
+// ---- Mode: fix, cutting filler -------------------------------------------------------------
+
+const cuts = (...list: string[]) => () => JSON.stringify({ fixes: [], cuts: list })
+
+test('fix cuts a filler run and leaves the words around it', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('ผมว่า[เอ่อเอ่อ]คิดว่า') })
+  expect((await send($, 'ผมว่าเอ่อเอ่อคิดว่าดี')).text).toBe('ผมว่าคิดว่าดี')
+})
+
+test('fix takes out two fillers side by side, each named with the other beside it', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('ผมว่า[เอ่อ]เอ่อ', 'เอ่อ[เอ่อ]คิด') })
+  expect((await send($, 'ผมว่าเอ่อเอ่อคิดว่าดี')).text).toBe('ผมว่าคิดว่าดี')
+})
+
+test('fix leaves no doubled or dangling space behind a cut', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('[เอ่อ ]ทำ', 'ใหม่ [อะไรงี้ ]ครับ', 'ครับ [อืม]') })
+  expect((await send($, 'เอ่อ ทำ log ใหม่ อะไรงี้ ครับ อืม')).text).toBe('ทำ log ใหม่ ครับ')
+})
+
+test('a cut that names the space after it does not glue two words together', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('อะไร[อะ ]auto') })
+  expect((await send($, 'กับอะไรอะ auto กับ ask')).text).toBe('กับอะไร auto กับ ask')
+})
+
+test('fix cuts a filler and corrects a word in the same message', async ($, on) => {
+  engine(on, {
+    settings: FIX_ON,
+    reply: () => '{"fixes":[{"from":"คมมิต","to":"commit"}],"cuts":["[เอ่อ ]คมมิต"]}',
+  })
+  expect((await send($, 'เอ่อ คมมิต ให้ด้วย')).text).toBe('commit ให้ด้วย')
+})
+
+test('a reply with no cuts field still applies its fixes', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: () => '{"fixes":[{"from":"คมมิต","to":"commit"}]}' })
+  expect((await send($, 'คมมิต ให้ด้วย')).text).toBe('commit ให้ด้วย')
+})
+
+test('fix never empties a word through a replacement: อะ stays inside อะไร', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: () => '{"fixes":[{"from":"อะ","to":""}]}' })
+  const typed = 'อะไรพังอะ'
+  expect((await send($, typed)).text).toBe(typed)
+})
+
+test('a cut with nothing beside it is dropped, or อา would leave อาหาร too', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('[อา]') })
+  const typed = 'อา สั่งอาหารให้หน่อย'
+  expect((await send($, typed)).text).toBe(typed)
+})
+
+// Only as far as the word breaker sees a word: it splits แบบฟอร์ม as แบบ|ฟอร์ม, so keeping that one
+// falls to the model. The prompt names it, and a live check on real dictation left it alone.
+test('a cut through the middle of a word is dropped', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('[อะ]ไรพัง', 'un[like] this') })
+  const typed = 'อะไรพัง unlike this'
+  expect((await send($, typed)).text).toBe(typed)
+})
+
+test('a cut naming a negation is dropped, since it would flip the sentence', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('[ไม่ ]ต้อง', 'do [not ]push') })
+  const typed = 'ไม่ ต้อง do not push'
+  expect((await send($, typed)).text).toBe(typed)
+})
+
+test('a cut naming text that is not in the message is dropped', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('ไม่มี[เอ่อ]คำนี้') })
+  const typed = 'เปิด log ขึ้นมาดู'
+  expect((await send($, typed)).text).toBe(typed)
+})
+
+test('a cut holding a number, a path or code is dropped', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('เปิด [src/a.ts ]ดู', 'รอ [30 ]วิ') })
+  const typed = 'เปิด src/a.ts ดู รอ 30 วิ'
+  expect((await send($, typed)).text).toBe(typed)
+})
+
+test('filler inside quoted code stays, the same filler outside it goes', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('ใส่[เอ่อ ]`', '`[เอ่อ ]x`', '` [เอ่อ ]ลง') })
+  expect((await send($, 'ใส่เอ่อ `เอ่อ x` เอ่อ ลง')).text).toBe('ใส่ `เอ่อ x` ลง')
+})
+
+test('pasted dictation gets cut, and its wrapper stays for Claude', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('ผมว่า[เอ่อ]ดี') })
+  const r = await send($, '<pasted_content id="026c">\nผมว่าเอ่อดี\n</pasted_content id="026c">')
+  expect(r.text).toBe('<pasted_content id="026c">\nผมว่าดี\n</pasted_content id="026c">')
+})
+
+test('fix cutting too many real words is a rewrite: the cuts go, the fixes stay', async ($, on) => {
+  engine(on, {
+    settings: FIX_ON,
+    reply: () => '{"fixes":[{"from":"คมมิต","to":"commit"}],"cuts":["[แก้ไฟล์ ]นี้","นี้[ทั้งหมด ]แล้ว"]}',
+  })
+  expect((await send($, 'แก้ไฟล์ นี้ทั้งหมด แล้วคมมิต')).text).toBe('แก้ไฟล์ นี้ทั้งหมด แล้วcommit')
+})
+
+test('a short message that is mostly sound is still cleaned', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('[เอ่อ ]ทำ') })
+  expect((await send($, 'เอ่อ ทำเลย')).text).toBe('ทำเลย')
+})
+
+test('a message of nothing but filler is sent as typed', async ($, on) => {
+  engine(on, { settings: FIX_ON, reply: cuts('[เอ่อ ]อืม', 'เอ่อ [อืม]') })
+  const typed = 'เอ่อ อืม'
+  expect((await send($, typed)).text).toBe(typed)
+})
+
+test('the log names what was cut and how many times', async ($, on) => {
+  const seen = engine(on, { settings: FIX_ON, reply: cuts('[เอ่อ ]ทำ', 'ทำ [เอ่อ ]log', 'log [อืม ]ใหม่', '[เอ่อ ]ทำ') })
+  await send($, 'เอ่อ ทำ เอ่อ log อืม ใหม่')
+  expect(seen.logs.join('\n')).toContain('ตัด เอ่อ ×2 · อืม')
+})
+
+// ---- The command ---------------------------------------------------------------------------
+
+const runs = (word: string, check: (saved: any, r: any) => void) =>
+  test(`/pp-up ${word}`, async ($, on) => {
+    let saved: any
+    on('store.get', () => ({ value: undefined }))
+    on('store.set', (_: unknown, e: any) => {
+      saved = e.value
+      return { value: undefined }
+    })
+    const r = await ($ as any).command.run({ command: 'pp-up', args: word })
+    check(saved, r)
+  })
+
+runs('re', saved => expect(saved.mode).toBe('rewrite'))
+runs('rewrite', saved => expect(saved.mode).toBe('rewrite'))
+runs('fix mid ask', saved => {
+  expect(saved.mode).toBe('fix')
+  expect(saved.power).toBe('mid')
+  expect(saved.flow).toBe('ask')
+})
+runs('nonsense', (_saved, r) => expect(JSON.stringify(r)).toContain('/pp-up [re|fix|off]'))
+
 // ---- Power ---------------------------------------------------------------------------------
 
 // Each tier is its own test: the hooks beneath the plugins are registered before the first `$`

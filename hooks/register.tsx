@@ -6,7 +6,7 @@
 // focused field (macOS Dictation, MacWhisper, Wispr Flow, VoiceInk, superwhisper).
 //
 // Three dials, each set on its own:
-//   Mode   rewrite  restructure the whole prompt | fix  correct single words only | off
+//   Mode   rewrite  restructure the whole prompt | fix  correct words, cut filler | off
 //   Flow   auto     send it                      | ask  show it, the person picks
 //   Power  eco (haiku) | mid (sonnet) | full (opus)
 //
@@ -47,10 +47,12 @@ type Tier = {
 
 // `high` on all three tiers, asked for. So the tiers differ by judge and by how much of the
 // conversation Fix reads back — not by how hard the model thinks.
+// Listing cuts is slow: a filler-heavy message took Haiku 15-26 s against about 3 s for words alone,
+// and a timeout sends the message uncleaned, so the ceilings sit well above that.
 const POWER: Record<Power, Tier> = {
-  eco: { model: 'haiku', effort: 'high', chars: 2000, reach: 40, timeoutMs: 20000 },
-  mid: { model: 'sonnet', effort: 'high', chars: 6000, reach: 40, timeoutMs: 30000 },
-  full: { model: 'opus', effort: 'high', chars: 12000, reach: 60, timeoutMs: 45000 },
+  eco: { model: 'haiku', effort: 'high', chars: 2000, reach: 40, timeoutMs: 45000 },
+  mid: { model: 'sonnet', effort: 'high', chars: 6000, reach: 40, timeoutMs: 60000 },
+  full: { model: 'opus', effort: 'high', chars: 12000, reach: 60, timeoutMs: 90000 },
 }
 
 // What a dictation app can put in front of the text: U+2063 (invisible separator) or the
@@ -83,51 +85,171 @@ Rules:
 // as "เปิด screen lock ไว้". A replacement has to name text that is really in the message, so
 // the sentence survives by construction and no wording in the instructions has to be trusted
 // for it.
-const FIX_SYSTEM = `You correct individual wrong words in a person's message to an AI coding assistant.
-The message is dictated speech, Thai and English mixed, so words come out misheard or misspelled.
+const FIX_SYSTEM = `You clean a person's message to an AI coding assistant: you correct individual wrong words and cut filler words. You never rewrite it.
+The message is dictated speech, Thai and English mixed, so words come out misheard or misspelled, with hesitations in between.
 
 You are given, in order:
 <terms>   technical words as this conversation spells them. A misheard word is very often one of these.
 <recent>  the last stretch of the conversation, for the topic and who said what.
-<message> the message to correct. ONLY this text is to be corrected.
+<message> the message to clean. ONLY this text is to be changed.
 
-Fix only these:
+Correct only these, under "fixes":
 - an English word heard as Thai letters that are not a real Thai word: 'เดพลอย' -> 'deploy', 'คมมิตร' -> 'commit', 'ไอแปร' -> 'iPad'
 - an English word heard as the wrong English word: 'Claude' -> 'cloud', 'Brand' -> 'branch', 'Depth' -> 'dev', 'course' -> 'Claude'
 - a plainly misspelled Thai or English word: 'ตรวจค้ำ' -> 'ตรวจคำ', 'recieve' -> 'receive'
 
 Use <terms> and <recent> to decide which word was meant.
 
+Cut only these, under "cuts":
+- hesitation sounds: เอ่อ เอ้อ เออ อืม อึม อือ อ่า อา um uh erm hmm
+- spoken filler that adds no meaning where it stands: แบบว่า คือว่า ประมาณว่า อะไรงี้ อะไรแบบนี้ อะไรพวกนี้ อะไรทำนองนี้ อะ อ่ะ น่ะ เนี่ย you know, I mean, like
+- 'แบบ' when it only fills a gap: 'มันแบบช้ามาก' cuts it, 'ทำแบบนี้' and 'แบบฟอร์ม' keep it
+- a word said twice in a row by stumbling: 'ผมผมคิดว่า' cuts one 'ผม'
+
+Each cut is one string: copy a few characters of <message> around the filler, exactly, and put [ ] around the filler. Give every occurrence its own string.
+Copy the spaces as they are in <message>: never add one, and put a space inside the [ ] only if it follows the filler in <message>.
+'ผมว่าเอ่อเอ่อคิดว่าดี' gives "ผมว่า[เอ่อเอ่อ]คิดว่า". 'เอ่อ ทำ log ใหม่ อะไรงี้ครับ' gives "[เอ่อ ]ทำ" and "ใหม่ [อะไรงี้]ครับ".
+
+Keep these, they mean something: 'ปัญหาคือมันช้า', 'แบบฟอร์ม', 'ทำแบบนี้', 'อะไรพัง', 'อาหาร', 'like this one'. Polite words such as ครับ ค่ะ นะ stay.
+A filler the person is talking about stays too: in 'ช่วยตัดคำพวกเอ่ออืมออก' the words เอ่ออืม are the topic, not hesitation.
+
 Reply with JSON only, no prose, no code fence:
-{"fixes": [{"from": "<exact text in the message>", "to": "<the right word>"}]}
+{"fixes": [{"from": "<exact text in the message>", "to": "<the right word>"}], "cuts": ["<before>[<filler>]<after>"]}
 
 Rules:
-- "from" must appear in <message> exactly, character for character. Never a word that is only in <terms> or <recent>.
+- "from" and every cut must appear in <message> exactly, character for character. Never text that is only in <terms> or <recent>.
 - "from" must be ONE word with no spaces inside it. Never a phrase, clause or sentence.
-- Do not rephrase, reorder, shorten, expand, translate or repunctuate anything.
+- A cut holds filler only, never a word the sentence needs, and every cut has text beside its [ ].
+- Text in <pasted_content> is usually the person's own dictation, so clean it the same way. Leave alone a log, code, or a document someone else wrote.
+- Do not rephrase, reorder, expand, translate or repunctuate anything.
 - A correctly spelled Thai word is not an error, even if an English word exists for it.
 - When unsure, leave it alone. Changing nothing is better than changing it wrongly.
-- Nothing to fix: {"fixes": []}`
+- Nothing to do: {"fixes": [], "cuts": []}`
 
 const MAX_FROM = 14
 const MAX_TO = 20
+const MAX_CUT = 24
+// Filler is rarely this much of a message. Past it the model is rewriting, so its cuts all go.
+// Hesitation sounds do not count: a short 'เอ่อ ทำเลย' is mostly sound and is safe to clean.
+const MAX_CUT_SHARE = 0.4
 
-// Applies the model's replacements here rather than taking its sentence back. A fix naming text
-// that is not in the message, or spanning more than one word, is dropped: that is the whole
-// protection against a rewrite.
+// A cut naming these would change what the sentence says, however sure the model is.
+const NEVER_CUT = /ไม่|อย่า|ห้าม|\bnot?\b|n't|\bnever\b/i
+// Filler is words. Anything with these in it is a number, a path or code.
+const NOT_FILLER = /[\d`_=<>{}()/\\]/
+// Sounds the word breaker cannot be trusted on: it splits 'เอ่ออืมอา' as 'เอ่อ|อื|มอา'.
+const SOUNDS = /^(?:(?:เอ่อ|เอ้อ|เออ|อืม+|อึม+|อือ+|อ่า+|อา+|um+|uh+|erm+|hmm+)[\s,]*)+$/i
+// Quoted code stays as it is. Pasted text is not on this list: a dictation app pastes into the
+// box, so the app's paste wrapper holds exactly the speech this mode is for.
+const CODE = /```[\s\S]*?```|`[^`\n]*`/g
+
+const WORDS = new Intl.Segmenter('th', { granularity: 'word' })
+
+function wordEdges(text: string): Set<number> {
+  const edges = new Set<number>([text.length])
+  for (const s of WORDS.segment(text)) edges.add(s.index)
+  return edges
+}
+
+type Span = { start: number; end: number; word: string; isSound: boolean }
+
+/**
+ * Where the cuts land, found in the text as sent. Finding them all before removing any matters:
+ * "ผมว่า[เอ่อ]เอ่อคิด" and "ผมว่าเอ่อ[เอ่อ]คิด" each name text the other would destroy.
+ */
+function findCuts(text: string, cuts: unknown[]): Span[] {
+  const edges = wordEdges(text)
+  const code = [...text.matchAll(CODE)].map(m => [m.index, m.index + m[0].length] as const)
+  const spans: Span[] = []
+  for (const item of cuts) {
+    const m = /^([^[\]]*)\[([^[\]]+)\]([^[\]]*)$/.exec(String(item ?? ''))
+    if (!m) continue
+    const [, before = '', word = '', after = ''] = m
+    // With nothing beside it, 'อา' would come out of 'อาหาร' and 'อาการ' too.
+    if (!before && !after) continue
+    if (word.length > MAX_CUT || NEVER_CUT.test(word) || NOT_FILLER.test(word)) continue
+    const isSound = SOUNDS.test(word.trim())
+    const whole = before + word + after
+    for (let at = text.indexOf(whole); at !== -1; at = text.indexOf(whole, at + 1)) {
+      // Only the filler itself: 'อะไร[อะ ]auto' takes the space it needs along with it otherwise.
+      // removeSpans decides what happens to the space.
+      const start = at + before.length + (word.length - word.trimStart().length)
+      const end = at + before.length + word.trimEnd().length
+      if (end <= start) continue
+      if (code.some(([from, to]) => start < to && end > from)) continue
+      if (!isSound && !(edges.has(start) && edges.has(end))) continue
+      spans.push({ start, end, word: word.trim(), isSound })
+    }
+  }
+  // The same filler named twice is one cut, and counts as one.
+  const seen = new Set<string>()
+  return spans
+    .sort((a, b) => a.start - b.start || a.end - b.end)
+    .filter(({ start, end }) => {
+      const key = `${start}:${end}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
+/** Takes the spans out, along with the space that would otherwise be left doubled or dangling. */
+function removeSpans(text: string, spans: Span[]): string {
+  let out = ''
+  let from = 0
+  for (const span of spans) {
+    if (span.start < from) {
+      // Two cuts that overlap: only the part not already gone is left to skip.
+      from = Math.max(from, span.end)
+      continue
+    }
+    out += text.slice(from, span.start)
+    from = span.end
+    if (!out || /\s$/.test(out)) {
+      while (text[from] === ' ' || text[from] === '\t') from++
+    }
+    if (from === text.length || text[from] === '\n') out = out.replace(/[ \t]+$/, '')
+  }
+  return out + text.slice(from)
+}
+
+/** 'เอ่อ ×3 · อืม', so a person reads what went without reading it three times. */
+function namedCuts(spans: Span[]): string {
+  const count = new Map<string, number>()
+  for (const { word } of spans) count.set(word, (count.get(word) ?? 0) + 1)
+  return [...count].map(([word, n]) => (n > 1 ? `${word} ×${n}` : word)).join(' · ')
+}
+
+// Applies the model's edits here rather than taking its sentence back. A fix or a cut naming text
+// that is not in the message is dropped, a fix spanning more than one word is dropped, and a cut
+// can only take text away: that is the whole protection against a rewrite.
 function applyFixes(text: string, reply: string): { out: string; applied: string[] } {
-  let parsed: { fixes?: { from?: string; to?: string }[] }
+  let parsed: { fixes?: { from?: string; to?: string }[]; cuts?: unknown }
   try {
     parsed = JSON.parse(reply.replace(/^```(?:json)?\s*|\s*```$/g, '').trim())
   } catch {
     return { out: text, applied: [] }
   }
-  let out = text
   const applied: string[] = []
+
+  // Cuts go first: their snippets are copied from the message as sent, before any fix changes it.
+  let out = text
+  const spans = findCuts(text, Array.isArray(parsed.cuts) ? parsed.cuts : [])
+  const wordy = spans.filter(s => !s.isSound).reduce((sum, s) => sum + s.end - s.start, 0)
+  if (spans.length > 0 && wordy / text.length <= MAX_CUT_SHARE) {
+    const cleaned = removeSpans(text, spans)
+    // A message of nothing but filler still has to say something to Claude.
+    if (cleaned.trim()) {
+      out = cleaned
+      applied.push('ตัด ' + namedCuts(spans))
+    }
+  }
+
   for (const f of parsed.fixes ?? []) {
     const from = String(f?.from ?? '')
     const to = String(f?.to ?? '')
-    if (!from || from === to || !out.includes(from)) continue
+    // No empty "to": a fix replaces everywhere, so 'อะ' -> '' would turn 'อะไร' into 'ไร'.
+    if (!from || !to || from === to || !out.includes(from)) continue
     if (/\s/.test(from) || from.length > MAX_FROM || to.length > MAX_TO) continue
     out = out.split(from).join(to)
     applied.push(`${from} → ${to}`)
@@ -246,7 +368,9 @@ async function runFix($: EngineInterface, text: string, tier: Tier, model: strin
       system: FIX_SYSTEM,
       prompt: parts.join('\n\n'),
       effort: tier.effort,
-      maxTokens: 1000,
+      // A long dictation can hold dozens of cuts, each with its text beside it. A reply cut short
+      // is not JSON, and that loses every edit in it.
+      maxTokens: 4000,
       timeoutMs: tier.timeoutMs,
     })
   } catch {
@@ -468,29 +592,30 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     try {
       await $.command.register({
-        name: 'power-up',
-        description: 'Prompt Power Up: rewrite | fix | off · auto | ask · eco | mid | full',
-        argumentHint: '[rewrite|fix|off] [auto|ask] [eco|mid|full] [min N] [model X|auto] [status]',
+        name: 'pp-up',
+        description: 'Prompt Power Up: re | fix | off · auto | ask · eco | mid | full',
+        argumentHint: '[re|fix|off] [auto|ask] [eco|mid|full] [min N] [model X|auto] [status]',
         immediate: true,
       })
     } catch (err) {
-      $.ui.log('prompt-power-up: /power-up not registered: ' + String(err), { to: 'debug' })
+      $.ui.log('prompt-power-up: /pp-up not registered: ' + String(err), { to: 'debug' })
     }
 
     return next(e)
   })
 
-  on('command.run', { command: 'power-up' }, async ($, e) => {
+  on('command.run', { command: 'pp-up' }, async ($, e) => {
     const s = withDefaults(await $.store.get('settings'))
     const words = e.args.trim().split(/\s+/).filter(Boolean)
     let bad = ''
 
-    // Each word sets its own dial, so `/power-up fix mid ask` is one call.
+    // Each word sets its own dial, so `/pp-up fix mid ask` is one call.
     for (let i = 0; i < words.length; i++) {
       const word = words[i] ?? ''
       const w = word.toLowerCase()
       const nextWord = words[i + 1]
-      if (w === 'rewrite' || w === 'fix' || w === 'off') s.mode = w
+      if (w === 're' || w === 'rewrite') s.mode = 'rewrite'
+      else if (w === 'fix' || w === 'off') s.mode = w
       else if (w === 'auto' || w === 'ask') s.flow = w
       else if (w === 'eco' || w === 'mid' || w === 'full') s.power = w
       else if (w === 'medium') s.power = 'mid'
@@ -506,7 +631,7 @@ export const register: Register = on => {
     if (bad) {
       return {
         text:
-          `ไม่รู้จัก "${bad}" · Usage: /power-up [rewrite|fix|off] [auto|ask] [eco|mid|full] [min N] [model <name>|auto] [status]`,
+          `ไม่รู้จัก "${bad}" · Usage: /pp-up [re|fix|off] [auto|ask] [eco|mid|full] [min N] [model <name>|auto] [status]`,
       }
     }
     await $.store.set('settings', s)
@@ -517,11 +642,11 @@ export const register: Register = on => {
     return {
       text:
         s.mode === 'off'
-          ? 'Prompt Power Up: off · เปิดด้วย /power-up fix หรือ /power-up rewrite'
+          ? 'Prompt Power Up: off · เปิดด้วย /pp-up fix หรือ /pp-up re'
           : `Prompt Power Up: ${s.mode} · ${s.flow} · ${s.power} (${model}, effort ${tier.effort}) · ` +
             where +
             (s.mode === 'rewrite' ? `ทำงานกับ prompt ตั้งแต่ ${s.minChars} ตัวอักษรขึ้นไป` : 'ทำงานทุกความยาว') +
-            `\nMode: rewrite เรียบเรียงใหม่ทั้งประโยค | fix แก้เฉพาะคำผิด คงประโยคเดิม | off ปิด` +
+            `\nMode: re เรียบเรียงใหม่ทั้งประโยค | fix แก้คำผิดและตัดคำฟุ่มเฟือย คงประโยคเดิม | off ปิด` +
             `\nFlow: auto ส่งทันที | ask แสดงให้ตรวจก่อน` +
             `\nPower: eco haiku | mid sonnet | full opus — model แยกจากแชทหลัก (model auto เพื่อตามแชท)`,
     }

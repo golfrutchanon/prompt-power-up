@@ -431,7 +431,7 @@ const forDisplay = (text: string) => text.replace(/<\/?pasted_content\b[^>]*>/g,
 const LABEL = 'prompt-power-up'
 
 // A rewrite can miss what was meant; then the person wants their own words back, not to say it all again.
-const COPY_ORIGINAL = '📋 คัดลอกข้อความเดิม (Copy original)'
+const COPY_ORIGINAL = '📋 คัดลอกข้อความเดิม'
 
 /**
  * Puts the original on the clipboard of the surface the press came from. A remote surface (the
@@ -441,7 +441,7 @@ const COPY_ORIGINAL = '📋 คัดลอกข้อความเดิม 
 async function copyOriginal($: EngineInterface, text: string, surface: RenderSurface) {
   try {
     if ((await $.ui.copy({ text, surface })).isCopied) {
-      $.ui.toast('คัดลอกข้อความเดิมแล้ว (copied)')
+      $.ui.toast('คัดลอกข้อความเดิมแล้ว')
       return
     }
   } catch {
@@ -456,13 +456,13 @@ async function copyOriginal($: EngineInterface, text: string, surface: RenderSur
       description: 'Copy the original prompt to the clipboard',
     } as any)
     if (!r?.isError) {
-      $.ui.toast('คัดลอกข้อความเดิมแล้ว (copied)')
+      $.ui.toast('คัดลอกข้อความเดิมแล้ว')
       return
     }
   } catch {
     // no Bash, or it was refused
   }
-  $.ui.toast('คัดลอกไม่สำเร็จ ลองลากคลุมข้อความแทน (could not copy)')
+  $.ui.toast('คัดลอกไม่สำเร็จ ลองลากคลุมข้อความแทน')
 }
 
 const changesLine = (entry: Shown) => `🔤 แก้คำ: ${entry.changes}`
@@ -727,7 +727,7 @@ export const register: Register = on => {
           <Text dimColor>{LABEL}</Text>
           <Box flexDirection="column" flexGrow={1} flexShrink={1}>
             <Markdown text={blockOf(entry)} dimColor />
-            <Box>
+            <Box flexDirection="row" justifyContent="flex-end">
               <Button
                 key="copy-original"
                 label={COPY_ORIGINAL}

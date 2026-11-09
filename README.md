@@ -113,7 +113,7 @@ organised as Goal / Context / Requirements / Expected output, in the language yo
 Runs on prompts of 120+ characters (`/pp-up min N`).
 
 ### Flow
-`auto` sends it: your row shows what was really sent, with your original below it and a **Copy original** button, and `fix` also names the words it changed or cut · `ask` shows both and offers **Send this / Check again / Keep original / Back to edit**
+`auto` sends it: your row shows what was really sent, with your original below it and a **📋 คัดลอกข้อความเดิม** (copy original) button at its bottom right, and `fix` also names the words it changed or cut · `ask` shows both and offers **Send this / Check again / Keep original / Back to edit**
 (Check again retries, up to 3 rounds).
 
 ### Power

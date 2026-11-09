@@ -671,3 +671,51 @@ test('a setting written when mode held the flow becomes rewrite with that flow',
   expect(seen.picks).toBe(0)
   expect(seen.models[0]).toBe('haiku')
 })
+
+// ---- Copy the original -----------------------------------------------------------------------
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: the copy button puts the original, as typed, on the clipboard`, async ($, on) => {
+    engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
+    engineRow(on)
+    const copied: any[] = []
+    on('ui.copy', (_: unknown, e: any) => {
+      copied.push(e)
+      return { value: { isCopied: true } }
+    })
+    const pasted = '<pasted_content id="1">\n' + LONG + '\n</pasted_content id="1">'
+    await send($, pasted)
+    const ui = await $.ui.mount(userRow(SECTIONS, surface))
+    await ui.press({ key: 'copy-original' })
+    expect(copied.length).toBe(1)
+    expect(copied[0].text).toBe(LONG)
+    expect(copied[0].surface).toBe(surface)
+    await ui.unmount()
+  })
+}
+
+test('a surface with no clipboard falls back to pbcopy with the original', async ($, on) => {
+  engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
+  engineRow(on)
+  on('ui.copy', () => ({ value: { isCopied: false, reason: 'no-clipboard' } }))
+  const commands: string[] = []
+  on('tool.call', { tool: 'Bash' }, (_: unknown, e: any) => {
+    commands.push(e.command)
+    return { result: { stdout: '', stderr: '', interrupted: false } }
+  })
+  await send($, LONG)
+  const ui = await $.ui.mount(userRow(SECTIONS, 'desktop'))
+  await ui.press({ key: 'copy-original' })
+  expect(commands.length).toBe(1)
+  expect(commands[0]).toContain('pbcopy')
+  expect(commands[0]).toContain(LONG)
+  await ui.unmount()
+})
+
+test('the copy button is only on rows the mod changed', async ($, on) => {
+  engine(on, { settings: AUTO })
+  engineRow(on)
+  const ui = await $.ui.mount(userRow('ข้อความอื่นที่ไม่เกี่ยว'))
+  expect(await ui.find({ type: 'Button' })).toBeUndefined()
+  await ui.unmount()
+})

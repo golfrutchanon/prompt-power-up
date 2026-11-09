@@ -18,7 +18,7 @@
 // window — slow, expensive, and growing all session — and is locked to the main thread's
 // model, so no Power tier would be possible. $.model.complete takes any model regardless of
 // what the chat runs on, which is what makes the tiers independent of the conversation.
-import type { Register, EngineInterface, ModelEffort, PromptSubmitInput } from 'claude-code'
+import type { Register, EngineInterface, ModelEffort, PromptSubmitInput, RenderSurface } from 'claude-code'
 
 type Mode = 'rewrite' | 'fix' | 'off'
 type Flow = 'auto' | 'ask'
@@ -430,6 +430,41 @@ const forDisplay = (text: string) => text.replace(/<\/?pasted_content\b[^>]*>/g,
 
 const LABEL = 'prompt-power-up'
 
+// A rewrite can miss what was meant; then the person wants their own words back, not to say it all again.
+const COPY_ORIGINAL = '📋 คัดลอกข้อความเดิม (Copy original)'
+
+/**
+ * Puts the original on the clipboard of the surface the press came from. A remote surface (the
+ * desktop app) may have no clipboard path for a mod yet, so macOS's own pbcopy is the fallback;
+ * it goes through the permission check like any Bash call.
+ */
+async function copyOriginal($: EngineInterface, text: string, surface: RenderSurface) {
+  try {
+    if ((await $.ui.copy({ text, surface })).isCopied) {
+      $.ui.toast('คัดลอกข้อความเดิมแล้ว (copied)')
+      return
+    }
+  } catch {
+    // fall through to pbcopy
+  }
+  let end = 'PPUP_EOF'
+  while (text.includes(end)) end += '_'
+  try {
+    const r: any = await $.tool.call({
+      tool: 'Bash',
+      command: `printf '%s' "$(cat <<'${end}'\n${text}\n${end}\n)" | pbcopy`,
+      description: 'Copy the original prompt to the clipboard',
+    } as any)
+    if (!r?.isError) {
+      $.ui.toast('คัดลอกข้อความเดิมแล้ว (copied)')
+      return
+    }
+  } catch {
+    // no Bash, or it was refused
+  }
+  $.ui.toast('คัดลอกไม่สำเร็จ ลองลากคลุมข้อความแทน (could not copy)')
+}
+
 const changesLine = (entry: Shown) => `🔤 แก้คำ: ${entry.changes}`
 
 /** The block under the row. The row itself holds what was sent, so what changed and the original are left. */
@@ -679,7 +714,7 @@ export const register: Register = on => {
     if (!entry) return next(e)
     entry.isDrawn = true
 
-    const { Box, Markdown, Text } = $.ui.resolve(e)
+    const { Box, Button, Markdown, Text } = $.ui.resolve(e)
     // The app shows the typed words when sent while idle and the rewrite when delivered mid-turn.
     // Name the text here so the row reads the same both ways: what was really sent.
     // Without the paste wrapper: Fix keeps it for Claude, and the person never typed it.
@@ -692,6 +727,15 @@ export const register: Register = on => {
           <Text dimColor>{LABEL}</Text>
           <Box flexDirection="column" flexGrow={1} flexShrink={1}>
             <Markdown text={blockOf(entry)} dimColor />
+            <Box>
+              <Button
+                key="copy-original"
+                label={COPY_ORIGINAL}
+                plain
+                dimColor
+                onPress={press => void copyOriginal($, entry.original, press.surface)}
+              />
+            </Box>
           </Box>
         </Box>
       </Box>

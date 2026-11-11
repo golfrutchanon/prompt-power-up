@@ -420,6 +420,10 @@ type Shown = {
    * typed words; delivered into a running turn it holds the rewrite (seen on the desktop).
    */
   bubbleHasRewrite: boolean
+  /** Rewrite mode's entry. Its row is redrawn until drawn, and never stood in for by a log row. */
+  isRewrite: boolean
+  /** The row has been drawn through this mod since it was sent; a log row does not count. */
+  isRowDrawn: boolean
 }
 
 const ORIGINAL_HEADING = '⚡ Power Up · 📝 ข้อความเดิม'
@@ -487,6 +491,32 @@ function remember(keys: readonly string[], entry: Shown) {
   }
 }
 
+// Rewrite only. The desktop may draw the row from the typed words before the rewrite is back, and
+// a redraw asked while the person is in another chat is lost: the row then keeps the typed words.
+// Asking again until the row is drawn through this mod puts the rewrite there when they come back.
+// No log row stands in meanwhile: drawn later, it would leave a third block (2026-11-11).
+const REDRAW_EVERY_MS = 3000
+const REDRAW_TICKS = 200 // ten minutes
+const waiting = new Set<Shown>()
+let redrawing: { cancel(): void } | undefined
+let ticksLeft = 0
+
+function redrawUntilDrawn($: EngineInterface, entry: Shown) {
+  waiting.add(entry)
+  ticksLeft = REDRAW_TICKS
+  if (redrawing) return
+  redrawing = $.clock.every(REDRAW_EVERY_MS, () => {
+    for (const w of waiting) if (w.isRowDrawn) waiting.delete(w)
+    if (waiting.size === 0 || --ticksLeft < 0) {
+      waiting.clear()
+      redrawing?.cancel()
+      redrawing = undefined
+      return
+    }
+    $.ui.invalidate('ui.render')
+  })
+}
+
 /** Markdown joins lines that have no blank between them; a list keeps its own tight rows. */
 function withLineBreaks(text: string): string {
   return text
@@ -541,6 +571,8 @@ function showSent(e: PromptSubmitInput, text: string, made: Made, isFix: boolean
     isDrawn: isLogged,
     sent: made.text,
     bubbleHasRewrite: e.turnId !== undefined,
+    isRewrite: !isFix,
+    isRowDrawn: false,
   }
   // The row may carry the app's paste wrapper or not, so it is found either way.
   remember([e.text, text, made.text, entry.original, entry.rewritten], entry)
@@ -617,6 +649,8 @@ async function decide($: EngineInterface, e: PromptSubmitInput): Promise<Action>
         isDrawn: true,
         sent: made.text,
         bubbleHasRewrite: false,
+        isRewrite: true,
+        isRowDrawn: false,
       }
       $.ui.log(originalRow(entry))
       $.ui.log(rewrittenRow(entry))
@@ -659,6 +693,13 @@ export const register: Register = on => {
     }
 
     return next(e)
+  })
+
+  // Coming back to the chat on the desktop may attach it again: the first moment a redraw lands.
+  on('session.attach', async ($, e, next) => {
+    const r = await next(e)
+    if (waiting.size > 0) $.ui.invalidate('ui.render')
+    return r
   })
 
   on('command.run', { command: 'pp-up' }, async ($, e) => {
@@ -713,6 +754,7 @@ export const register: Register = on => {
     const entry = shown.get(e.props.text.trim())
     if (!entry) return next(e)
     entry.isDrawn = true
+    entry.isRowDrawn = true
 
     const { Box, Button, Markdown, Text } = $.ui.resolve(e)
     // The app shows the typed words when sent while idle and the rewrite when delivered mid-turn.
@@ -759,11 +801,15 @@ export const register: Register = on => {
       // The row may already be drawn from the typed text, before this entry existed, and a repaint
       // reuses that answer. 0.2.4 left this out and never showed its boxes.
       $.ui.invalidate('ui.render')
-      // No surface has to draw the row through this mod. Rather than lose the words, say them in a
-      // log row if nothing drew the block by then.
-      $.clock.after(BOX_WAIT_MS, () => {
-        if (!show.isDrawn) $.ui.log(fallbackRow(show))
-      })
+      if (show.isRewrite) {
+        redrawUntilDrawn($, show)
+      } else {
+        // Fix: no surface has to draw the row through this mod. Rather than lose the words, say
+        // them in a log row if nothing drew the block by then.
+        $.clock.after(BOX_WAIT_MS, () => {
+          if (!show.isDrawn) $.ui.log(fallbackRow(show))
+        })
+      }
     }
     return next(action.context ? { ...e, text: action.text, context: action.context } : { ...e, text: action.text })
   })

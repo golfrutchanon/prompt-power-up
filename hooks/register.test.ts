@@ -15,7 +15,7 @@ type Reply = { isAnswered: true; text: string; usage: Record<string, never> }
 const says = (text: string): Reply => ({ isAnswered: true, text, usage: {} })
 
 /** What one run of the engine saw, so a test can assert on the request and not only the answer. */
-type Seen = { models: string[]; efforts: string[]; prompts: string[]; picks: number; logs: string[]; fire: () => void; invalidates: number }
+type Seen = { models: string[]; efforts: string[]; prompts: string[]; picks: number; logs: string[]; fire: () => void; invalidates: number; tick: () => void; ticking: number }
 
 // The hooks below stand for the engine: the model answers, the store holds `settings`, the
 // transcript holds `messages`, the prompt enters. $.ui.ask is a tool.call of AskUserQuestion,
@@ -24,7 +24,7 @@ const engine = (
   on: any,
   opts: { picks?: string[]; settings?: unknown; reply?: (prompt: string) => string; messages?: unknown[]; holdTimer?: boolean } = {},
 ): Seen => {
-  const seen: Seen = { models: [], efforts: [], prompts: [], picks: 0, logs: [], fire: () => {}, invalidates: 0 }
+  const seen: Seen = { models: [], efforts: [], prompts: [], picks: 0, logs: [], fire: () => {}, invalidates: 0, tick: () => {}, ticking: 0 }
   on('store.get', () => ({ value: opts.settings }))
   on('store.set', () => ({ value: undefined }))
   on('session.messages', () => ({ value: opts.messages ?? [] }))
@@ -57,6 +57,13 @@ const engine = (
         })
       : { value: undefined },
   )
+  // A period of $.clock.every passes only when the test calls tick(), so a loop never runs away.
+  on('clock.every', () => {
+    seen.ticking++
+    return new Promise(resolve => {
+      seen.tick = () => resolve({ value: undefined })
+    })
+  })
   on('ui.toast', () => ({ value: undefined }))
   on('prompt.submit', (_: unknown, e: any) => ({ text: e.text, context: e.context }))
   return seen
@@ -100,13 +107,11 @@ test('rewrite + auto sends without asking', async ($, on) => {
 
 const AUTO = { mode: 'rewrite', flow: 'auto', power: 'full', minChars: 120 }
 
-test('rewrite + auto with nothing drawn shows the rewrite in a row and sends the rewrite', async ($, on) => {
+test('rewrite + auto with nothing drawn sends the rewrite and adds no log row', async ($, on) => {
   const seen = engine(on, { settings: AUTO })
   expect((await send($, LONG)).text).toBe(BETTER)
   await settle()
-  const shown = seen.logs.join('\n')
-  expect(shown).toContain('Prompt ที่เรียบเรียงใหม่')
-  expect(shown).toContain(BETTER)
+  expect(seen.logs).toEqual([])
 })
 
 test('rewrite + ask shows both before the person picks', async ($, on) => {
@@ -177,14 +182,61 @@ test('a drawn block means no log rows at all', async ($, on) => {
   await ui.unmount()
 })
 
-test('with nothing drawn the same one block comes as one log row', async ($, on) => {
+// The person sent it and went to another chat: the desktop drew nothing while they were away.
+test('rewrite with nothing drawn keeps asking for a redraw and never adds a log row', async ($, on) => {
   const seen = engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
-  await send($, LONG + '\nบรรทัดสอง')
+  await send($, LONG)
   seen.fire()
+  for (let i = 0; i < 3; i++) {
+    seen.tick()
+    await settle()
+  }
+  expect(seen.invalidates).toBe(4)
+  expect(seen.logs).toEqual([])
+})
+
+test('rewrite drawn late, after the person came back: two blocks, no third', async ($, on) => {
+  const seen = engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
+  engineRow(on)
+  await send($, LONG)
+  seen.fire()
+  seen.tick()
   await settle()
-  expect(seen.logs.length).toBe(1)
-  expect(seen.logs[0]).toContain('▸ Goal: ทำ usage bar')
-  expect(seen.logs.some(l => l.includes('\n') || l.includes('**'))).toBe(false)
+  const ui = await $.ui.mount(userRow(LONG))
+  await expectRowThenOriginal(ui)
+  expect(seen.logs).toEqual([])
+  await ui.unmount()
+})
+
+test('rewrite stops asking for a redraw once the row is drawn', async ($, on) => {
+  const seen = engine(on, { settings: AUTO, reply: () => SECTIONS, holdTimer: true })
+  engineRow(on)
+  await send($, LONG)
+  const ui = await $.ui.mount(userRow(LONG))
+  await ui.find({ type: 'Markdown' })
+  const before = seen.invalidates
+  const periods = seen.ticking
+  seen.tick()
+  await settle()
+  expect(seen.invalidates).toBe(before)
+  expect(seen.ticking).toBe(periods)
+  await ui.unmount()
+})
+
+test('rewrite + ask, picking the rewrite: no log row past the two shown before the pick', async ($, on) => {
+  const seen = engine(on, { picks: [SEND], settings: { ...AUTO, flow: 'ask' }, reply: () => SECTIONS, holdTimer: true })
+  await send($, LONG)
+  seen.fire()
+  seen.tick()
+  await settle()
+  expect(seen.logs.length).toBe(2)
+})
+
+test('fix never starts the redraw loop: its row keeps the log row it had', async ($, on) => {
+  const seen = engine(on, { settings: FIX_ON, reply: cleans, holdTimer: true })
+  await send($, DICTATED)
+  expect(seen.ticking).toBe(0)
+  expect(seen.invalidates).toBe(1)
 })
 
 test('rewrite + ask shows exactly two log rows before the person picks', async ($, on) => {
@@ -208,13 +260,17 @@ test('a row the mod did not rewrite is left to the engine', async ($, on) => {
 
 test('the paste wrapper never shows, and still goes to Claude as it was', async ($, on) => {
   const pasted = '<pasted_content id="026c">\n' + LONG + '\n</pasted_content id="026c">'
-  const seen = engine(on, { settings: AUTO, reply: () => pasted + ' เพิ่ม', holdTimer: true })
+  engine(on, { settings: AUTO, reply: () => pasted + ' เพิ่ม', holdTimer: true })
+  engineRow(on)
   const sent = await send($, pasted, 'turn-1')
   expect(sent.text).toBe(pasted + ' เพิ่ม')
-  seen.fire()
-  await settle()
-  expect(seen.logs.join(' ').includes('pasted_content')).toBe(false)
-  expect(seen.logs[0]).toContain(LONG)
+  const ui = await $.ui.mount(userRow(pasted + ' เพิ่ม'))
+  const row = await ui.find({ type: 'Text', text: /^row: / })
+  expect(row.text.includes('pasted_content')).toBe(false)
+  const block = await ui.find({ type: 'Markdown' })
+  expect(block.text.includes('pasted_content')).toBe(false)
+  expect(block.text).toContain(LONG)
+  await ui.unmount()
 })
 
 test('a rewrite asks for a redraw, since the row may already be drawn from the typed text', async ($, on) => {
